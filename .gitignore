@@ -1,0 +1,39 @@
+# ---- Node / 前端 ----
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+.eslintcache
+
+# ---- Rust / Tauri ----
+target/
+src-tauri/target/
+src-tauri/gen/
+**/*.rs.bk
+
+# ---- 自托管渲染资源（由 scripts/fetch-vditor 拉取，不入库；见 DEV_GUIDE 8 节白名单）----
+vendor/vditor/
+
+# ---- 生成物 ----
+test-corpus/big-10mb.md
+docs/m0/*.pdf
+docs/m0/*.png
+
+# ---- 编辑器 / 系统 ----
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---- 日志与临时 ----
+*.log
+logs/
+tmp/
+.env
+.env.*
+!.env.example
