@@ -1,10 +1,23 @@
 //! DG 7.1 `settings.rs` 职责：配置读写；飞书密钥 DPAPI 加密。
 //!
-//! 存储位置（DG 7.3）：`%APPDATA%\MDNaonao\`
+//! 存储位置（DG 7.3 + UPGRADE_PLAN 2.0「便携版 F19」）：数据根目录有两种形态，
+//! 由「exe 同级是否存在 `portable.marker`」决定，**整个进程只探测一次**：
+//!
+//! | 模式 | 判据 | 数据根 |
+//! |---|---|---|
+//! | 安装版（默认） | 无 marker | `%APPDATA%\MDNaonao\` |
+//! | 便携版 | exe 同级有 `portable.marker` | `<exe 所在目录>\data\` |
+//!
+//! 两种模式**共用同一份 exe**（不做两套构建），根目录之下的结构完全相同：
 //! * `settings.json` —— 主题、字号、缩放、导出偏好、代码折行、frontmatter 显示、
 //!   大纲钉住态、左栏宽度/折叠、窗口几何；字段契约见 [`Settings`]；
 //! * `lark-token.json` —— 飞书 app_id / app_secret / token 缓存，
-//!   **必须 Windows DPAPI 加密后落盘**，不得明文。
+//!   **必须 Windows DPAPI 加密后落盘**，不得明文；
+//! * `logs\` —— 见 [`crate::logging::log_dir`]（便携版日志同样落在便携目录里，
+//!   否则「解压即用、拷走即净」就不成立）。
+//!
+//! 便携版另有一条硬约束：**不碰注册表**（不注册文件关联、不写额外右键动词），
+//! 闸门在 [`crate::shell_integ`]，判据就是本模块的 [`is_portable`]。
 //!
 //! 注意：这里刻意不使用 Tauri 的 `app_data_dir()`——它返回
 //! `%APPDATA%\com.mdnaonao.app`，与 DG 7.3 规定的 `%APPDATA%\MDNaonao` 不一致；
@@ -14,20 +27,165 @@
 //! `tauri.conf.json > app.security.assetProtocol.scope` 的运行时另一半，
 //! 属于「权限接线」而非文件读写，故与配置一起放在这里，便于集中审查。
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use tauri::Manager;
 
 use crate::error::{AppError, AppResult};
 
-/// 用户数据根目录：`%APPDATA%\MDNaonao\`。
+// ---------------------------------------------------------------------------
+// 数据根目录（安装版 / 便携版，UPGRADE_PLAN 2.0 = DG F19）
+// ---------------------------------------------------------------------------
+
+/// 便携标记文件名：放在 exe 同级即切换为便携模式。
+/// 内容不做任何解析（空文件即可），存在性就是全部语义。
+pub const PORTABLE_MARKER: &str = "portable.marker";
+
+/// 便携模式下的数据子目录名：`<exe 目录>\data\`。
+/// 不直接把 settings.json 摊在 exe 旁边——便携包解压出来要一眼能分清「程序」和「我的数据」。
+const PORTABLE_DATA_DIR: &str = "data";
+
+/// 安装模式下 `%APPDATA%` 之下的目录名（DG 7.3）。
+const INSTALLED_DIR_NAME: &str = "MDNaonao";
+
+/// 可写性探测用的临时文件名。用固定名而非随机名：探测失败时残留也只有这一个，
+/// 且下次探测会直接覆盖它。
+const WRITE_PROBE_NAME: &str = ".write-probe";
+
+/// 数据根目录的两种形态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataRootMode {
+    /// `%APPDATA%\MDNaonao\`
+    Installed,
+    /// `<exe 目录>\data\`
+    Portable,
+}
+
+impl DataRootMode {
+    /// 日志与 IPC 用的稳定标识。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DataRootMode::Installed => "installed",
+            DataRootMode::Portable => "portable",
+        }
+    }
+}
+
+/// 探测结果：模式 + 绝对路径。
+#[derive(Debug, Clone)]
+struct DataRoot {
+    mode: DataRootMode,
+    path: PathBuf,
+}
+
+/// 探测结果缓存。
+///
+/// 为什么必须缓存：[`app_data_dir`] 在启动路径上被反复调用（日志初始化、settings 读写、
+/// recent.json 读写），每次都去 `current_exe()` + `metadata()` 敲一次盘是纯浪费；
+/// 更要命的是**中途结果翻转**——用户在运行期间删掉 marker，一半数据写进便携目录、
+/// 另一半写进 `%APPDATA%`，比彻底不支持便携版还糟。一次探测定终身。
+///
+/// 存 `Result<_, String>` 而不是 `AppResult<_>`：[`AppError`] 不是 `Clone`，
+/// 而 `OnceLock` 只能借出引用，错误分支需要每次调用都能造一个新的 [`AppError`]。
+static DATA_ROOT: OnceLock<Result<DataRoot, String>> = OnceLock::new();
+
+/// exe 同级有没有 marker —— 纯函数，便于单测（真实探测见 [`detect_portable_root`]）。
+fn portable_root_for_exe_dir(exe_dir: &Path) -> Option<PathBuf> {
+    // 必须是**文件**：同名目录（用户手滑 mkdir）不该把整个应用切进便携模式
+    exe_dir
+        .join(PORTABLE_MARKER)
+        .is_file()
+        .then(|| exe_dir.join(PORTABLE_DATA_DIR))
+}
+
+/// 取 exe 所在目录并探测 marker。取不到 exe 路径（极端权限场景）视为安装模式。
+fn detect_portable_root() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    portable_root_for_exe_dir(exe.parent()?)
+}
+
+fn resolve_data_root() -> Result<DataRoot, String> {
+    if let Some(path) = detect_portable_root() {
+        return Ok(DataRoot {
+            mode: DataRootMode::Portable,
+            path,
+        });
+    }
+    let base =
+        std::env::var_os("APPDATA").ok_or_else(|| "未取到 %APPDATA% 环境变量".to_string())?;
+    Ok(DataRoot {
+        mode: DataRootMode::Installed,
+        path: PathBuf::from(base).join(INSTALLED_DIR_NAME),
+    })
+}
+
+fn data_root() -> AppResult<&'static DataRoot> {
+    DATA_ROOT
+        .get_or_init(resolve_data_root)
+        .as_ref()
+        .map_err(|message| AppError::config(message.clone()))
+}
+
+/// 用户数据根目录：便携版 `<exe 目录>\data\`，否则 `%APPDATA%\MDNaonao\`。
 pub fn app_data_dir() -> AppResult<PathBuf> {
-    let base = std::env::var_os("APPDATA")
-        .ok_or_else(|| AppError::config("未取到 %APPDATA% 环境变量"))?;
-    Ok(PathBuf::from(base).join("MDNaonao"))
+    Ok(data_root()?.path.clone())
+}
+
+/// 当前是否便携模式。探测失败一律按**安装模式**处理——
+/// 宁可少走一次便携分支，也不能在不确定的情况下放行注册表写入。
+pub fn is_portable() -> bool {
+    data_root().is_ok_and(|root| root.mode == DataRootMode::Portable)
+}
+
+/// 启动日志：模式 + 数据根绝对路径。
+///
+/// 这一行是「我的设置去哪了 / 为什么设置没保留」的唯一自查入口：
+/// 用户把便携包解压到两个位置、或安装版与便携版同机共存时，
+/// 只要贴出这行日志就能立刻定位到底在读写哪个目录。
+pub fn log_data_root() {
+    match data_root() {
+        Ok(root) => tracing::info!(
+            mode = root.mode.as_str(),
+            data_dir = %root.path.display(),
+            "数据根目录已确定"
+        ),
+        Err(err) => tracing::error!(%err, "数据根目录解析失败，配置将无法持久化"),
+    }
+}
+
+/// 确认数据根目录可创建且可写，不可写时给**明确**错误（绝不静默失败）。
+///
+/// 触发场景：便携包被解压进 `Program Files`（非管理员不可写）、放在只读 U 盘、
+/// 或被公司策略锁定的目录。这些情况下每一次 `save_settings` 都会失败，
+/// 用户看到的却是「设置改了但重启就没了」——必须在启动时就把话说清楚。
+pub fn ensure_data_root_writable() -> AppResult<PathBuf> {
+    let root = app_data_dir()?;
+    fs::create_dir_all(&root).map_err(|err| unwritable_error(&root, &err))?;
+
+    let probe = root.join(WRITE_PROBE_NAME);
+    fs::write(&probe, b"mdnaonao").map_err(|err| unwritable_error(&root, &err))?;
+    // 删不掉不算失败：能写就说明目录可用，残留的探测文件下次会被覆盖
+    let _ = fs::remove_file(&probe);
+
+    Ok(root)
+}
+
+/// 把底层 IO 错误翻译成「用户能照着做」的配置错误。
+fn unwritable_error(root: &Path, err: &std::io::Error) -> AppError {
+    let advice = if is_portable() {
+        "便携版被放在了只读位置（Program Files / 只读 U 盘 / 受策略保护的目录），请把整个便携目录移到可写位置再运行"
+    } else {
+        "请检查该目录的访问权限，或确认 %APPDATA% 未被重定向到不可写位置"
+    };
+    AppError::config(format!(
+        "数据目录不可写：{}（{err}）。{advice}",
+        root.display()
+    ))
 }
 
 /// `settings.json` 完整路径。
@@ -388,9 +546,30 @@ pub fn save_settings_sync(settings: &Settings) -> AppResult<()> {
 
     let path = settings_path()?;
     let json = serde_json::to_vec_pretty(&normalized)?;
-    write_atomic(&path, &json)?;
+    write_atomic(&path, &json).map_err(|err| explain_save_failure(&path, err))?;
     tracing::debug!(path = %path.display(), bytes = json.len(), "settings.json 已写入");
     Ok(())
+}
+
+/// 写盘失败时把「权限类」错误升级成带处置建议的配置错误。
+///
+/// 便携版放进 `Program Files` 时，用户看到的原始错误是「拒绝访问。(os error 5)」——
+/// 这句话对用户毫无信息量。其余错误（磁盘满、路径过长）原样透传，不做无根据的猜测。
+fn explain_save_failure(path: &Path, err: AppError) -> AppError {
+    // ERROR_ACCESS_DENIED(5) / ERROR_WRITE_PROTECT(19)：只读介质在部分路径上
+    // 不会被 std 映射成 PermissionDenied，补一道原始错误码判断
+    let is_permission = matches!(
+        &err,
+        AppError::Io(io)
+            if io.kind() == std::io::ErrorKind::PermissionDenied
+                || matches!(io.raw_os_error(), Some(5) | Some(19))
+    );
+    if !is_permission {
+        return err;
+    }
+    let dir = path.parent().unwrap_or(path);
+    let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, err.to_string());
+    unwritable_error(dir, &io)
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +586,32 @@ pub async fn load_settings() -> AppResult<Settings> {
 #[tauri::command]
 pub async fn save_settings(settings: Settings) -> AppResult<()> {
     save_settings_sync(&settings)
+}
+
+/// 「关于」对话框需要的应用元信息（UPGRADE_PLAN 附录 A.1「关于 MDNaonao」）。
+///
+/// 三个字段都是前端拿不到的：版本号只存在于 `Cargo.toml`（前端 package.json 是另一份，
+/// 会漂）；便携标志与数据根目录只有后端探测得出。字段名即前后端契约（camelCase）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    /// `CARGO_PKG_VERSION`，与安装包版本同源
+    pub version: String,
+    /// 是否便携模式（关于框据此显示模式徽标）
+    pub portable: bool,
+    /// 数据根目录绝对路径（用户排查「我的设置去哪了」）
+    pub data_dir: String,
+}
+
+/// 读取应用元信息（版本 / 便携标志 / 数据根目录）。
+#[tauri::command]
+pub async fn app_info() -> AppResult<AppInfo> {
+    let root = data_root()?;
+    Ok(AppInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        portable: root.mode == DataRootMode::Portable,
+        data_dir: root.path.display().to_string(),
+    })
 }
 
 /// 保存飞书凭据（进 DPAPI 密文）。
@@ -450,11 +655,31 @@ pub async fn save_lark_credential(credential: LarkCredential) -> AppResult<()> {
 /// `crate::settings::allow_asset_dir(&app, parent_dir)?;`
 /// （`read_markdown` 加 `app: AppHandle` 形参不影响前端契约——`AppHandle`
 /// 由 Tauri 自动注入，前端仍然只传 `{ path }`。）
+///
+/// # 幂等
+///
+/// 同一个目录只真正下发一次授权：外部保存触发的静默刷新会让同一篇文档反复走
+/// `read_markdown`，而 Tauri 的 scope 是一个不断 push 的 glob 列表——重复 allow
+/// 会让它无限膨胀，之后**每一次**资源请求都要多匹配一条 glob。
 pub fn allow_asset_dir<R: tauri::Runtime, M: Manager<R>>(manager: &M, dir: &Path) -> AppResult<()> {
+    // 本进程已授权过的目录集合（不落盘：授权随进程生命周期存在）
+    static AUTHORIZED_DIRS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+    let authorized = AUTHORIZED_DIRS.get_or_init(|| Mutex::new(HashSet::new()));
+    // 锁中毒（某次持锁时 panic）不该让图片从此全部裂开：拿回内部值继续用，
+    // 最坏后果只是重复下发一次授权。
+    let mut authorized = authorized
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if authorized.contains(dir) {
+        return Ok(());
+    }
+
     let recursive = dir.parent().is_some();
     manager
         .asset_protocol_scope()
         .allow_directory(dir, recursive)?;
+    authorized.insert(dir.to_path_buf());
     tracing::debug!(dir = %dir.display(), recursive, "asset 协议：已授权目录");
     Ok(())
 }
@@ -693,6 +918,87 @@ mod tests {
         raw.extend_from_slice(br#"{ "zoomPercent": 120 }"#);
         let settings = parse_settings(&raw).expect("带 BOM 的配置也要能解析");
         assert_eq!(settings.zoom_percent, 120);
+    }
+
+    /// 建一个本次测试专属的空目录。
+    ///
+    /// 不引入 `tempfile` dev-dependency：Cargo.toml 属编译面，为三个单测加一棵依赖树
+    /// 不划算；进程 id + 线程 id 已足够避免并行测试互相踩。
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mdnaonao-portable-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("应能创建临时目录");
+        dir
+    }
+
+    /// 便携探测（UPGRADE_PLAN 2.0）：exe 同级有 marker → 数据根落到 `<exe 目录>\data\`。
+    #[test]
+    fn portable_marker_redirects_data_root_next_to_exe() {
+        let exe_dir = scratch_dir("with-marker");
+        fs::write(exe_dir.join(PORTABLE_MARKER), b"").expect("应能写入 marker");
+
+        assert_eq!(
+            portable_root_for_exe_dir(&exe_dir),
+            Some(exe_dir.join(PORTABLE_DATA_DIR)),
+            "有 marker 时必须切到 exe 同级的 data 目录"
+        );
+
+        let _ = fs::remove_dir_all(&exe_dir);
+    }
+
+    /// 无 marker（安装版的常态）：探测必须返回 None，交由调用方回落 `%APPDATA%`。
+    #[test]
+    fn missing_marker_keeps_installed_mode() {
+        let exe_dir = scratch_dir("no-marker");
+
+        assert_eq!(
+            portable_root_for_exe_dir(&exe_dir),
+            None,
+            "无 marker 时不得进入便携模式"
+        );
+
+        let _ = fs::remove_dir_all(&exe_dir);
+    }
+
+    /// 同名**目录**不是 marker：用户手滑 `mkdir portable.marker` 不该把数据根整个搬家。
+    #[test]
+    fn marker_must_be_a_file_not_a_directory() {
+        let exe_dir = scratch_dir("marker-dir");
+        fs::create_dir_all(exe_dir.join(PORTABLE_MARKER)).expect("应能创建同名目录");
+
+        assert_eq!(portable_root_for_exe_dir(&exe_dir), None);
+
+        let _ = fs::remove_dir_all(&exe_dir);
+    }
+
+    /// 安装模式的根目录名不许漂（DG 7.3 写死 `%APPDATA%\MDNaonao`）。
+    #[test]
+    fn installed_root_name_matches_spec() {
+        assert_eq!(INSTALLED_DIR_NAME, "MDNaonao");
+        assert_eq!(PORTABLE_MARKER, "portable.marker");
+        assert_eq!(DataRootMode::Portable.as_str(), "portable");
+        assert_eq!(DataRootMode::Installed.as_str(), "installed");
+    }
+
+    /// 契约 B：`app_info` 的 wire 字段（前端「关于」对话框逐字依赖）。
+    #[test]
+    fn app_info_wire_keys_match_contract() {
+        let value = serde_json::to_value(AppInfo {
+            version: "0.1.0".to_string(),
+            portable: true,
+            data_dir: r"D:\MDNaonao\data".to_string(),
+        })
+        .expect("序列化不应失败");
+        let object = value.as_object().expect("AppInfo 应序列化为 JSON 对象");
+
+        let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+        let expected: BTreeSet<&str> = ["version", "portable", "dataDir"].into_iter().collect();
+        assert_eq!(actual, expected, "app_info 字段契约漂移（TS 侧需同步）");
+        assert_eq!(object["dataDir"], r"D:\MDNaonao\data");
     }
 
     /// 原子写：能覆盖已有文件，且不留下 `.tmp` 残渣。

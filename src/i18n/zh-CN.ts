@@ -76,6 +76,16 @@ export const zhCN = {
     dropHint: "松开以打开文件",
     /** 拖入的是不支持的类型：遮罩换 danger 描边，配这一行说明 */
     dropUnsupported: "仅支持 Markdown 文件",
+    /**
+     * 大文件顶部细提示条（FR-01 / DG 6.6）：说明降级了什么，而不是只说"文件很大"。
+     * 出现在正文列顶部，一行小字，不占用阅读注意力。
+     */
+    largeMode: "大文件模式：代码块工具条限量、滚动高亮降级为节流",
+    /** 超过 MAX_OPEN_MB 直接拒开（错误块标题） */
+    tooLarge: "文件过大，暂不打开",
+    /** 拒开的说明行；参数为上限（MB），与 fileSession 的 MAX_OPEN_MB 同源 */
+    tooLargeDetail: (limitMb: number): string =>
+      `单个文档上限 ${limitMb} MB，超过后渲染会长时间无响应，请拆分后再打开`,
   },
 
   /**
@@ -98,6 +108,12 @@ export const zhCN = {
     externalImageBlocked: "外链图片默认不加载",
     /** 占位块上的按钮：点击后才写入真实 src */
     loadExternalImage: "点击加载",
+    /** 已写入 src、等待网络回来的中间态（避免"点了没反应"） */
+    externalImageLoading: "正在加载…",
+    /** 加载失败：占位块留在原地并给出重试出路（按钮文案复用 common.retry） */
+    externalImageFailed: "外链图片加载失败",
+    /** 一篇文档里有多张外链图时，占位块上追加的批量入口 */
+    loadAllExternalImages: "本篇全部加载",
   },
 
   status: {
@@ -174,6 +190,22 @@ export const zhCN = {
     openRecent: "打开",
     pin: "置顶",
     unpin: "取消置顶",
+  },
+
+  /**
+   * 「关于」对话框（附录 A.1 关于组，批次 2 点亮）。
+   * 极简四行：版本 / 运行模式 / 数据目录 + 一个「打开日志目录」出路——
+   * 排查"我的设置去哪了""日志在哪"这两个高频问题，靠的就是后两项。
+   */
+  about: {
+    version: "版本",
+    mode: "运行模式",
+    modePortable: "便携版",
+    modeInstalled: "安装版",
+    dataDir: "数据目录",
+    openLogDir: "打开日志目录",
+    /** 后端 app_info 尚未就绪时的占位（不留空白，也不假装有值） */
+    unknown: "—",
   },
 
   common: {

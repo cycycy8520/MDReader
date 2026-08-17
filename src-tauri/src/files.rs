@@ -119,10 +119,13 @@ pub struct RecentEntry {
 
 /// 读取并解码一个 Markdown 文件。
 ///
-/// 流程：元数据校验 → 读字节 → [`detect_and_decode`] → [`extract_title`] → 组装载荷。
+/// 流程：元数据校验 → 读字节 → [`detect_and_decode`] → [`extract_title`] →
+/// **授权文档所在目录给 asset 协议** → 组装载荷。
 /// 路径不存在/不是文件返回 [`AppError::NotFound`]（FR-06 警示条依赖此错误 kind）。
+///
+/// `app: AppHandle` 由 Tauri 自动注入，**不改前端契约**（前端仍然只传 `{ path }`）。
 #[tauri::command]
-pub async fn read_markdown(path: String) -> AppResult<DocumentPayload> {
+pub async fn read_markdown(app: AppHandle, path: String) -> AppResult<DocumentPayload> {
     let started = Instant::now();
     let target = to_absolute(Path::new(&path));
 
@@ -156,6 +159,15 @@ pub async fn read_markdown(path: String) -> AppResult<DocumentPayload> {
     let title = extract_title(&content, &target);
     let line_count = count_lines(&content);
     let is_large = byte_size > LARGE_FILE_BYTES;
+
+    // 正文里的相对路径图片走 asset 协议，而静态 scope 只覆盖用户 profile 下的目录：
+    // D 盘笔记、UNC 共享里的配图会全部裂开（UPGRADE_PLAN 2.6 的根因）。
+    // 这里按「刚打开的这一个目录」按需授权；失败不影响正文，只是图片可能加载不到。
+    if let Some(parent) = target.parent() {
+        if let Err(err) = crate::settings::allow_asset_dir(&app, parent) {
+            tracing::warn!(dir = %parent.display(), %err, "asset 协议目录授权失败，本地图片可能无法加载");
+        }
+    }
 
     let elapsed_ms = started.elapsed().as_millis() as u64;
     if is_large {

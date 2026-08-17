@@ -6,15 +6,15 @@
  * 不含任何 DOM/样式；动作实现由 App.tsx 以 `ContextMenuActions` 注入，
  * 因此这里既不碰 store，也不碰 ipc。
  *
- * 【点亮批次】附录 A 的「点亮」列 = 该项从置灰变可用的批次。本批次（批次 3）只点亮：
+ * 【点亮批次】附录 A 的「点亮」列 = 该项从置灰变可用的批次。当前已点亮：
  *   复制 / 复制为纯文本 / 复制全文源、用其他编辑器打开、在资源管理器中显示、
- *   缩放 ▸、主题 ▸，以及最近列表那一套（打开 / 打开所在文件夹 / 复制路径 / 置顶 / 移除）。
+ *   缩放 ▸、主题 ▸、关于 MDNaonao，以及最近列表那一套
+ *   （打开 / 打开所在文件夹 / 复制路径 / 置顶 / 移除）。
  * 其余一律 `pending: true`（置灰 + hover 提示「开发中」），**照画不省**——
  * 用户要看到完整的产品形态，而不是一份被裁剪过的菜单：
  *   导出 ▸ / 在浏览器中打开 / 打印…            → M2
  *   分享 ▸ / 导入 Obsidian…                     → M3（v1.1 生态版）
  *   禅模式 F11                                   → 3.3 尚未实现，先置灰（不为它临时造半成品）
- *   关于 MDNaonao                                → 见文件末尾的说明：缺"版本号来源 + 关于面板"两块地基
  *
  * 置灰的子菜单父项（导出 / 分享）**不展开**：hover 无背景、cursor-not-allowed，
  * 与「禁用项不响应 hover」的规格一致；子项定义仍然写在这里，供对拍附录 A，
@@ -48,6 +48,12 @@ export interface ContextMenuActions {
   readonly openRecent: (path: string) => void;
   readonly toggleRecentPinned: (path: string) => void;
   readonly removeRecent: (path: string) => void;
+  /**
+   * 打开「关于 MDNaonao」对话框。
+   * 对话框本体**刻意不放在菜单层**（ContextMenu 只管菜单，不该长出第二种浮层）：
+   * 由 App.tsx 持有开合状态并渲染，这里只发一个「请打开」的信号。
+   */
+  readonly showAbout: () => void;
 }
 
 /** 正文 / 链接 / 图片三套菜单共用的上下文 */
@@ -297,23 +303,20 @@ function viewGroup(input: DocumentMenuInput): MenuNode[] {
 }
 
 /**
- * 关于组（附录 A.1 第 5 段）。
+ * 关于组（附录 A.1 第 5 段）—— **已点亮**。
  *
- * 附录 A 标注它「批次 3 即可用（版本号 + 检查更新入口）」，本批次仍置灰，理由与禅模式同类：
- *   ① 前端拿不到版本号——未定义构建期常量，也没有取应用版本的 ipc 封装，
- *      而组件禁止直接 import @tauri-apps/api（ESLint 强制），本任务的可改文件也不含这两处；
- *   ② 「检查更新」属 M2（DG 12 节 v1.0 清单），现在做只能是个空壳。
- * 与其造一个显示不出版本、点了没有更新可查的关于面板，不如照禅模式的处置：如实置灰。
- * 点亮条件已写在 UPGRADE_PLAN 的交付说明里，届时改这一处 pending 即可。
+ * 此前置灰的理由是「前端拿不到版本号」；版本号来源与对话框现由 App 层提供
+ * （见 ContextMenuActions.showAbout 的注释），本处只负责发信号，不认识版本号也不认识浮层。
+ * 「检查更新」入口仍属 M2，由对话框内部自行置灰，与菜单无关。
  */
-function aboutGroup(): MenuNode[] {
+function aboutGroup(input: DocumentMenuInput): MenuNode[] {
   return [
     {
       kind: "item",
       id: "about",
       label: t.contextMenu.about,
       icon: "info",
-      pending: true,
+      run: input.actions.showAbout,
     },
   ];
 }
@@ -331,7 +334,7 @@ export function buildDocumentMenu(input: DocumentMenuInput): MenuNode[] {
     separator("sep-open"),
     ...viewGroup(input),
     separator("sep-view"),
-    ...aboutGroup(),
+    ...aboutGroup(input),
   ];
 }
 

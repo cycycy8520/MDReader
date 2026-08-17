@@ -15,6 +15,13 @@
 //!
 //! 正常路径下额外动词由 NSIS 安装钩子写入；本模块只在
 //! 「安装后用户在设置页手动开关右键菜单项」时使用。
+//!
+//! ## 便携模式（UPGRADE_PLAN 2.0 / DG F19）
+//!
+//! 便携版的承诺是「解压即用、拷走即净」——**在系统里不留任何痕迹**。
+//! 因此本模块所有注册表**写入**路径（含删除，删除也是写）统一走
+//! [`ensure_registry_writable`] 闸门：便携模式下一律短路 + `warn`，绝不落键。
+//! 只读检测（[`query_default_app`]）不受影响，它本来就不改系统。
 
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +87,31 @@ pub struct DefaultAppStatus {
 }
 
 // ---------------------------------------------------------------------------
+// 便携模式闸门
+// ---------------------------------------------------------------------------
+
+/// 注册表写入的统一闸门：便携模式下短路（UPGRADE_PLAN 2.0）。
+///
+/// 返回 `Err` 而不是 `Ok(())`：静默成功会让设置页的开关看起来生效了，
+/// 下次打开却又是关的——「点了没反应」正是批次 1 刚清零的那类问题。
+/// 前端按 `kind = "config"` 提示「便携版不改系统设置」即可。
+///
+/// **每一个** winreg 写入（`create_subkey` / `set_value` / `delete_subkey*`）
+/// 落地前都必须先过这里；新增写入函数时同步加一行调用。
+fn ensure_registry_writable(what: &str) -> AppResult<()> {
+    if !crate::settings::is_portable() {
+        return Ok(());
+    }
+    tracing::warn!(
+        operation = what,
+        "便携模式：已短路注册表写入（系统里不留痕迹）"
+    );
+    Err(AppError::config(format!(
+        "便携模式不写注册表（{what}）：文件关联与右键菜单请使用安装版"
+    )))
+}
+
+// ---------------------------------------------------------------------------
 // 命令骨架
 // ---------------------------------------------------------------------------
 
@@ -113,6 +145,7 @@ pub async fn open_default_apps_settings() -> AppResult<()> {
 /// 写完调用 [`refresh_shell`]。**新增键必须同步进 `nsis-hooks.nsh` 删除清单。**
 #[tauri::command]
 pub async fn register_extra_verbs(verbs: Vec<ShellVerb>) -> AppResult<()> {
+    ensure_registry_writable("register_extra_verbs")?;
     Err(AppError::not_implemented(format!(
         "shell_integ::register_extra_verbs（M2）：{verbs:?}"
     )))
@@ -124,6 +157,8 @@ pub async fn register_extra_verbs(verbs: Vec<ShellVerb>) -> AppResult<()> {
 /// **不动 `<PROGID>` 本身，更不动 `.md` 扩展名键**。
 #[tauri::command]
 pub async fn unregister_extra_verbs(verbs: Vec<ShellVerb>) -> AppResult<()> {
+    // 删除同样是写：便携版从来没写过键，也就没有可删的键
+    ensure_registry_writable("unregister_extra_verbs")?;
     Err(AppError::not_implemented(format!(
         "shell_integ::unregister_extra_verbs（M2）：{verbs:?}"
     )))
@@ -137,7 +172,11 @@ pub async fn unregister_extra_verbs(verbs: Vec<ShellVerb>) -> AppResult<()> {
 ///
 /// TODO(M2)：用已锁定版本的 `windows` crate 调用（红线 10：版本跟随 wry）。
 pub fn refresh_shell() -> AppResult<()> {
-    Err(AppError::not_implemented("shell_integ::refresh_shell（M2）"))
+    // 便携模式下没有任何关联变更需要广播，直接短路（省一次全系统 Shell 通知）
+    ensure_registry_writable("refresh_shell")?;
+    Err(AppError::not_implemented(
+        "shell_integ::refresh_shell（M2）",
+    ))
 }
 
 #[cfg(test)]

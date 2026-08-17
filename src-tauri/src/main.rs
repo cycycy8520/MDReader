@@ -84,6 +84,9 @@ fn main() {
             mdnaonao_lib::settings::load_settings,
             mdnaonao_lib::settings::save_settings,
             mdnaonao_lib::settings::save_lark_credential,
+            // 版本号 / 便携标志 / 数据根目录：右键菜单「关于」的数据源（附录 A.1）。
+            // 前端拿不到这三样——版本只在 Cargo.toml，便携与数据根只有后端探测得出。
+            mdnaonao_lib::settings::app_info,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");

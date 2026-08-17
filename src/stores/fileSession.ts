@@ -28,8 +28,18 @@ import { useRecentFilesStore } from "./recentFiles";
 /** 会话阶段：空 → 读取中 → 渲染中（分段渲染时可长时间停留）→ 就绪 / 出错 */
 export type SessionPhase = "empty" | "loading" | "rendering" | "ready" | "error";
 
-/** 出错来源：读文件失败 / 文件不在了 / 渲染管线抛错；决定用户可见文案 */
-export type SessionErrorKind = "read" | "missing" | "render";
+/** 出错来源：读文件失败 / 文件不在了 / 渲染管线抛错 / 超过体积上限；决定用户可见文案 */
+export type SessionErrorKind = "read" | "missing" | "render" | "too-large";
+
+/**
+ * 单文档体积上限（UPGRADE_PLAN 2.8「>50MB 拒开并给明确文案」）。
+ *
+ * 与 FR-01 的「大文件」（5MB，走降级渲染）是两条线：5–50MB 打开但降级，
+ * >50MB 直接拒开——那个量级的文档 md2html 一步就会把 WebView 卡死几十秒，
+ * 与其给一个假的进度条，不如如实说明并保留界面可用。
+ */
+export const MAX_OPEN_MB = 50;
+export const MAX_OPEN_BYTES = MAX_OPEN_MB * 1024 * 1024;
 
 /** Rust `AppError` 的序列化形态：{ kind, message }（见 src-tauri/src/error.rs） */
 interface BackendError {
@@ -101,6 +111,16 @@ interface FileSessionState {
   /** 关闭当前文档并停止监听 */
   close: () => void;
 
+  /**
+   * DOM 落地即回填（UPGRADE_PLAN 2.8）：**不动 phase**。
+   * 渲染管线在 Mermaid/KaTeX 还没落地时就能给出大纲与字数，界面因此不必陪着等
+   * 那 8s 的就绪超时；phase 仍由 setRendered 在真正搬进阅读区后翻到 ready。
+   */
+  setEarlyRender: (payload: {
+    outline?: OutlineNode[];
+    frontmatter?: Frontmatter | null;
+    stats?: DocumentStats;
+  }) => void;
   setRendered: (payload: {
     outline: OutlineNode[];
     frontmatter: Frontmatter | null;
@@ -153,6 +173,20 @@ export const useFileSessionStore = create<FileSessionState>()((set, get) => {
         return;
       }
 
+      // 体积闸门（2.8）：宁可在这里拒开，也不让 md2html 把 WebView 卡死几十秒。
+      // 错误信息保持技术口径（面向日志），用户可见文案由 errorKind 在 App 侧查表。
+      if (payload.byteSize > MAX_OPEN_BYTES) {
+        set({
+          phase: "error",
+          path: payload.path,
+          error: `byteSize=${payload.byteSize} exceeds limit=${MAX_OPEN_BYTES}`,
+          errorKind: "too-large",
+          missing: false,
+          silentRefresh: false,
+        });
+        return;
+      }
+
       set({
         phase: "rendering",
         path: payload.path,
@@ -187,11 +221,13 @@ export const useFileSessionStore = create<FileSessionState>()((set, get) => {
       }
       const described = describeError(error);
       const missing = described.kind === "not-found";
+      // 后端若先一步拒开（同一道闸门在 Rust 侧也可能存在），按同一个 kind 归口
+      const tooLarge = described.kind === "too-large";
       set({
         phase: "error",
         path,
         error: described.message,
-        errorKind: missing ? "missing" : "read",
+        errorKind: tooLarge ? "too-large" : missing ? "missing" : "read",
         missing,
         silentRefresh: false,
       });
@@ -225,6 +261,20 @@ export const useFileSessionStore = create<FileSessionState>()((set, get) => {
       void unwatchFile().catch((error: unknown) => {
         console.warn("[fileSession] unwatchFile failed", error);
       });
+    },
+
+    setEarlyRender: ({ outline, frontmatter, stats }) => {
+      const patch: Partial<FileSessionState> = {};
+      if (outline !== undefined) {
+        patch.outline = outline;
+      }
+      if (frontmatter !== undefined) {
+        patch.frontmatter = frontmatter;
+      }
+      if (stats !== undefined) {
+        patch.stats = stats;
+      }
+      set(patch);
     },
 
     setRendered: ({ outline, frontmatter, stats }) => {

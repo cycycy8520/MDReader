@@ -1,8 +1,15 @@
 /**
  * 渲染管线 —— 对应 DG 7.1 渲染层与 DG 7.2-2 数据流。
  *
+ * 【批次 2.1 离屏双缓冲】整条管线在**离屏容器**里跑完，settled 后才用一次
+ * `replaceChildren` 把子节点整体搬进真实容器（搬运前后各给调用方一个同步回调，
+ * 用于同帧读取/恢复 scrollTop）。这样外部保存触发的重渲染全程不清空旧内容：
+ * 没有白闪、没有滚动高度塌缩、没有"先跳顶再弹回"。
+ * 离屏容器必须**挂在 document 上**且用 `visibility:hidden` 而非 `display:none`——
+ * 后者没有布局盒，Mermaid 的 getBBox 与 KaTeX 的宽度测量全会拿到 0。
+ *
  * 固定顺序（不得调换，安全与正确性都依赖它）：
- *   1. 剥离 frontmatter（FR-14，交属性卡片展示，不进正文）
+ *   1. 剥离 frontmatter（FR-14，按 frontmatterDisplay 渲染成属性卡片 / 代码块 / 不显示）
  *   2. Vditor.md2html()：cdn 指向本地自托管目录、markdown.sanitize = true
  *      —— 红线 1/8：sanitize 任何代码路径不得置 false；cdn 不得指向任何公共 CDN
  *      （注释里也不写那两个域名字面量：scripts/check-no-cdn.mjs 扫产物字符串，
@@ -36,6 +43,7 @@ import type {
   DocumentStats,
   FileEncoding,
   Frontmatter,
+  FrontmatterDisplay,
   HeadingLevel,
   OutlineNode,
   ResolvedTheme,
@@ -105,6 +113,19 @@ const DIAGRAM_RESWEEP_MS = [2000, 5000];
 const HEADING_ID_FALLBACK = "heading-";
 /** 代码块增强后包裹层的标记类，用于幂等判断 */
 const CODE_WRAP_MARKER = "data-code-block";
+/**
+ * 离屏舞台取不到真实容器宽度时的兜底宽度（阅读区尚未布局完成的极端时序）。
+ * 只影响 Mermaid 首次测量，搬进真实容器后 SVG 自身的 max-width:100% 会重新贴合。
+ */
+const STAGE_FALLBACK_WIDTH = 800;
+/**
+ * 离屏舞台需要从真实容器镜像过去的属性：样式层的 codeWrap 规则按它选中，
+ * 不镜像的话离屏测出来的代码块版面与落地后的不一致。
+ *
+ * 刻意**不**含 `data-reading-width`：那条规则带 32px padding，而舞台宽度取的是
+ * 真实容器的 clientWidth（已是内容宽度），镜像过来会把 padding 算两遍。
+ */
+const STAGE_MIRRORED_ATTRS = ["data-code-wrap"] as const;
 
 /**
  * 这些 language-* 代码块由专用渲染器接管（或压根没自托管对应资源），
@@ -154,14 +175,33 @@ export interface RenderOptions {
   emitPrintReadySignal?: boolean;
   /** DocumentPayload.isLarge：滚动高亮降级为节流、代码块增强限量（FR-01） */
   isLarge?: boolean;
+  /** frontmatter 三态显示（FR-14 / 2.5）；不传按 card */
+  frontmatterDisplay?: FrontmatterDisplay;
   /** 当前章节回调（FR-04 滚动高亮）；不传则不挂任何滚动监听 */
   onActiveHeading?: (headingId: string) => void;
+  /**
+   * 中止令牌（2.1）。调用方切换文档时 abort：本次渲染即使已经跑完也**不会**搬进真实容器，
+   * 从根上杜绝"上一篇的渲染结果覆盖下一篇"。已 abort 时返回的结果 `committed` 为 false。
+   */
+  signal?: AbortSignal;
+  /**
+   * DOM 落地即回调（2.8）：大纲/字数不再被 Mermaid 的 8s 就绪超时绑架。
+   * 此刻元素还在离屏容器里，但标题 id 已经定稿，搬运不会改变它们。
+   */
+  onOutlineReady?: (outline: OutlineNode[]) => void;
+  onStatsReady?: (stats: DocumentStats) => void;
+  /** 搬运**之前**同步调用：调用方在这里读取旧内容的 scrollTop（读晚了会被新内容钳位） */
+  onBeforeCommit?: (container: HTMLDivElement) => void;
+  /** 搬运**之后**同步调用：调用方在这里恢复 scrollTop，与搬运处于同一帧，故无白闪无跳动 */
+  onCommit?: (container: HTMLDivElement) => void;
 }
 
 export interface RenderResult {
   outline: OutlineNode[];
   frontmatter: Frontmatter | null;
   stats: DocumentStats;
+  /** 内容是否真的搬进了真实容器；false = 渲染期间被 signal 中止，调用方应整批丢弃 */
+  committed: boolean;
   /** 解除 IntersectionObserver 等副作用；切换文档前必须调用 */
   dispose: () => void;
 }
@@ -170,6 +210,9 @@ export interface RenderResult {
 
 export interface StrippedSource {
   frontmatter: Frontmatter | null;
+  /** 原样的 frontmatter 文本（含 `---` 围栏，去掉结尾换行）；无 frontmatter 时为空串。
+   *  `frontmatterDisplay === "raw"` 直接把它渲染成代码块。 */
+  raw: string;
   /** 剥离后的正文；行号偏移不修正（查找与锚点都基于渲染后 DOM） */
   body: string;
 }
@@ -202,7 +245,7 @@ function unquote(value: string): string {
 export function stripFrontmatter(source: string): StrippedSource {
   const match = FRONTMATTER_RE.exec(source);
   if (match === null) {
-    return { frontmatter: null, body: source };
+    return { frontmatter: null, raw: "", body: source };
   }
 
   // RegExpExecArray 的下标类型是 string，但可选分组未命中时实际是 undefined，需显式放宽
@@ -245,7 +288,67 @@ export function stripFrontmatter(source: string): StrippedSource {
     lastKey = key;
   }
 
-  return { frontmatter, body: source.slice(match[0].length) };
+  return {
+    frontmatter,
+    raw: match[0].replace(/\r?\n$/, ""),
+    body: source.slice(match[0].length),
+  };
+}
+
+/* ── 1.5 frontmatter 的三种落地形态（2.5，样式类 .md-frontmatter 已就绪） ── */
+
+/**
+ * `card`：正文顶部的 dl 属性卡片。
+ * 用 DOM API 逐个建节点而不是拼 HTML 字符串：键与值都来自作者文档，
+ * textContent 赋值天然不解析标记，等于把这条路径整体挪出 XSS 面之外。
+ */
+function buildFrontmatterCard(frontmatter: Frontmatter): HTMLElement | null {
+  const entries = Object.entries(frontmatter);
+  if (entries.length === 0) {
+    return null;
+  }
+  const card = document.createElement("dl");
+  card.className = "md-frontmatter";
+  for (const [key, value] of entries) {
+    const term = document.createElement("dt");
+    term.textContent = key;
+    const detail = document.createElement("dd");
+    detail.textContent = value;
+    card.append(term, detail);
+  }
+  return card;
+}
+
+/**
+ * `raw`：原样代码块。挂 language-yaml 让 hljs 正常接管——
+ * 不挂的话 `pre > code` 依旧会被就绪判定盯上（它等的是 .hljs 类），白等一轮超时。
+ */
+function buildFrontmatterRaw(raw: string): HTMLElement | null {
+  if (raw === "") {
+    return null;
+  }
+  const block = document.createElement("pre");
+  const code = document.createElement("code");
+  code.className = "language-yaml";
+  code.textContent = raw;
+  block.appendChild(code);
+  return block;
+}
+
+/** 按 frontmatterDisplay 把 frontmatter 插到正文最前面；hidden 或无内容时什么都不做 */
+function renderFrontmatter(
+  host: HTMLElement,
+  frontmatter: Frontmatter | null,
+  raw: string,
+  display: FrontmatterDisplay,
+): void {
+  if (frontmatter === null || display === "hidden") {
+    return;
+  }
+  const node = display === "raw" ? buildFrontmatterRaw(raw) : buildFrontmatterCard(frontmatter);
+  if (node !== null) {
+    host.prepend(node);
+  }
 }
 
 /* ── 2. Markdown → HTML（lute，本地自托管） ─────────────────── */
@@ -419,8 +522,28 @@ function safeAssetUrl(absolutePath: string): string | null {
   }
 }
 
-/** 把外链图片换成占位块（红线 4：默认不发起任何外部请求，必须用户显式点击） */
-function replaceWithExternalPlaceholder(image: HTMLImageElement, signal: AbortSignal): void {
+/** 占位块上的小按钮（点击加载 / 本篇全部加载 / 重试）共用同一套类名 */
+function createPlaceholderButton(label: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "shrink-0 rounded-chip px-2 py-0.5 text-ui-sm text-accent hover:bg-hover";
+  button.textContent = label;
+  return button;
+}
+
+/**
+ * 把外链图片换成占位块（红线 4：默认不发起任何外部请求，必须用户显式点击），
+ * 返回该占位块的「加载」入口供批量加载复用（2.6）。
+ *
+ * 三态就地切换，不弹 toast、不换位置：
+ *   待加载 → 正在加载…（按钮禁用）→ 成功则整块换成 <img>；失败则回到占位块并把按钮改成"重试"。
+ * 失败态**保留占位块**而不是留一个裂图：裂图什么信息也不给，占位块至少还能再点一次。
+ */
+function replaceWithExternalPlaceholder(
+  image: HTMLImageElement,
+  onLoadAll: (() => void) | null,
+  signal: AbortSignal,
+): () => void {
   const source = image.getAttribute("src") ?? "";
   const alt = image.getAttribute("alt") ?? "";
 
@@ -433,26 +556,56 @@ function replaceWithExternalPlaceholder(image: HTMLImageElement, signal: AbortSi
   label.className = "truncate";
   label.textContent = t.preview.externalImageBlocked;
 
-  const action = document.createElement("button");
-  action.type = "button";
-  action.className = "shrink-0 rounded-chip px-2 py-0.5 text-ui-sm text-accent hover:bg-hover";
-  action.textContent = t.preview.loadExternalImage;
-  action.addEventListener(
-    "click",
-    () => {
-      const loaded = document.createElement("img");
-      loaded.className = "max-w-full rounded-card";
-      loaded.alt = alt;
-      loaded.loading = "lazy";
-      loaded.referrerPolicy = "no-referrer";
-      loaded.src = source;
-      placeholder.replaceWith(loaded);
-    },
-    { signal },
-  );
+  const action = createPlaceholderButton(t.preview.loadExternalImage);
 
+  let loading = false;
+  const load = (): void => {
+    // isConnected 判断兼作"已成功替换"的判据：成功后占位块已被移出文档
+    if (loading || !placeholder.isConnected) {
+      return;
+    }
+    loading = true;
+    label.textContent = t.preview.externalImageLoading;
+    action.disabled = true;
+
+    const loaded = document.createElement("img");
+    loaded.className = "max-w-full rounded-card";
+    loaded.alt = alt;
+    loaded.loading = "lazy";
+    loaded.referrerPolicy = "no-referrer";
+    loaded.addEventListener(
+      "load",
+      () => {
+        placeholder.replaceWith(loaded);
+      },
+      { signal, once: true },
+    );
+    loaded.addEventListener(
+      "error",
+      () => {
+        loading = false;
+        label.textContent = t.preview.externalImageFailed;
+        action.textContent = t.common.retry;
+        action.disabled = false;
+      },
+      { signal, once: true },
+    );
+    // src 最后赋值：两个监听必须先就位，否则缓存命中时 load 事件会早于监听注册
+    loaded.src = source;
+  };
+
+  action.addEventListener("click", load, { signal });
   placeholder.append(label, action);
+
+  // 单张图不给批量入口（点它和点上一个按钮是同一件事，只会显得啰嗦）
+  if (onLoadAll !== null) {
+    const all = createPlaceholderButton(t.preview.loadAllExternalImages);
+    all.addEventListener("click", onLoadAll, { signal });
+    placeholder.append(all);
+  }
+
   image.replaceWith(placeholder);
+  return load;
 }
 
 /**
@@ -467,6 +620,9 @@ function rewriteImages(
   baseDir: string | null,
   signal: AbortSignal,
 ): void {
+  // 外链图先攒起来：占位块要不要给「本篇全部加载」入口，取决于全篇有几张
+  const external: HTMLImageElement[] = [];
+
   for (const image of Array.from(container.querySelectorAll("img"))) {
     image.removeAttribute("srcset");
     const raw = image.getAttribute("src");
@@ -480,7 +636,7 @@ function rewriteImages(
       continue;
     }
     if (EXTERNAL_SRC_RE.test(source)) {
-      replaceWithExternalPlaceholder(image, signal);
+      external.push(image);
       continue;
     }
 
@@ -506,6 +662,22 @@ function rewriteImages(
     // 供阅读区做灯箱事件委托（DG 6.4-4）
     image.setAttribute("data-preview-image", "true");
     image.loading = "lazy";
+  }
+
+  if (external.length === 0) {
+    return;
+  }
+  // loaders 先建空数组再填：每个占位块的「全部加载」都要能触发**所有**兄弟占位块，
+  // 包括在它之后才创建的那些，所以批量入口只能是读数组的闭包。
+  const loaders: (() => void)[] = [];
+  const loadAll = (): void => {
+    for (const load of [...loaders]) {
+      load();
+    }
+  };
+  const batch = external.length > 1 ? loadAll : null;
+  for (const image of external) {
+    loaders.push(replaceWithExternalPlaceholder(image, batch, signal));
   }
 }
 
@@ -982,99 +1154,87 @@ function countLines(body: string): number {
   return body === "" ? 0 : body.split(/\r\n|\r|\n/).length;
 }
 
+/* ── 10. 离屏舞台（2.1 双缓冲） ─────────────────────────────── */
+
+interface RenderStage {
+  /** 镜像真实容器的离屏节点：整条管线都在它里面跑 */
+  readonly host: HTMLDivElement;
+  readonly dispose: () => void;
+}
+
+/**
+ * 建一个「与真实容器同宽同类同变量」的离屏舞台。
+ *
+ * 三个约束缺一不可：
+ *   1. **必须挂到 document 上**——脱离文档树的节点没有布局，Mermaid 的 getBBox()
+ *      与 KaTeX 的宽度测量会全部拿到 0，图表会缩成一团。
+ *   2. **只能用 visibility:hidden，不能用 display:none**——后者同样没有布局盒。
+ *   3. 宽度必须等于真实容器的内容宽度，否则表格列宽、代码块折行、Mermaid 版面
+ *      都会按错误宽度算一遍，搬进去以后再抖一次，等于白做双缓冲。
+ * height:0 + overflow:hidden 则保证它不参与页面滚动、不撑出任何滚动条。
+ */
+function createRenderStage(container: HTMLDivElement): RenderStage {
+  const stage = document.createElement("div");
+  stage.setAttribute("data-render-stage", "true");
+  stage.setAttribute("aria-hidden", "true");
+  const width = container.clientWidth > 0 ? container.clientWidth : STAGE_FALLBACK_WIDTH;
+  stage.style.cssText = [
+    "position:absolute",
+    "left:0",
+    "top:0",
+    `width:${width}px`,
+    "height:0",
+    "overflow:hidden",
+    "visibility:hidden",
+    "pointer-events:none",
+    "z-index:-1",
+  ].join(";");
+
+  const host = document.createElement("div");
+  host.className = container.className;
+  // 排版变量（--md-reading-font / --md-zoom）由 App 以 inline style 注入真实容器，
+  // 离屏节点不是它的后代，拿不到继承值，只能整段搬过来
+  const inlineStyle = container.getAttribute("style");
+  if (inlineStyle !== null) {
+    host.setAttribute("style", inlineStyle);
+  }
+  for (const name of STAGE_MIRRORED_ATTRS) {
+    const value = container.getAttribute(name);
+    if (value !== null) {
+      host.setAttribute(name, value);
+    }
+  }
+
+  stage.appendChild(host);
+  document.body.appendChild(stage);
+  return {
+    host,
+    dispose: () => {
+      stage.remove();
+    },
+  };
+}
+
 /* ── 主入口 ─────────────────────────────────────────────────── */
 
 /**
- * 执行完整渲染管线。返回值里的 dispose 必须在切换文档 / 卸载前调用，
+ * 执行完整渲染管线（离屏 → settled → 一次性搬进真实容器）。
+ * 返回值里的 dispose 必须在切换文档 / 卸载前调用，
  * 否则滚动监听与「已复制」回退定时器会泄漏到下一个文档。
  */
 export async function renderMarkdown(options: RenderOptions): Promise<RenderResult> {
   const startedAt = performance.now();
   const { container, theme } = options;
-  const { frontmatter, body } = stripFrontmatter(options.source);
+  const { frontmatter, raw: frontmatterRaw, body } = stripFrontmatter(options.source);
 
   let disposed = false;
+  let committed = false;
   const abort = new AbortController();
   const timers = new Set<number>();
-
-  ensureOptionalAssetStubs();
-
-  // 1) Markdown → HTML（lute 内部已按 sanitize:true 过滤一遍，这是第一层）
-  const html = await Vditor.md2html(body, buildPreviewOptions(theme));
-
-  // 2) 第二层：先净化字符串再写入，绝不把未净化的 HTML 挂到已连接的节点上
-  container.innerHTML = purifyHtml(html);
-  // 与 previewRender 对齐的两个类名：vditor-reset 是正文排版基类，
-  // vditor-reset--anchor 对应 anchor:1（标题锚点靠左），阅读区样式层按需接管。
-  container.classList.add("vditor-reset", "vditor-reset--anchor");
-
-  // 统计要在「增强 DOM」之前取，否则语言标签与复制按钮的文案会被算进字数
-  const plainText = container.textContent ?? "";
-
-  // 3) 图片：本地改写 + 外链拦截
-  rewriteImages(container, options.baseDir, abort.signal);
-
-  // 3.5) 表格：包进 .md-table-wrap 横向滚动容器（列宽自适应下超宽表格不裁切）
-  wrapTables(container);
-
-  // 4) 大纲：早于图表渲染完成，让大纲面板可以先出来
-  const outline = buildOutline(container);
-
-  // 5) 三个渲染器（产物来自本地可信库；Mermaid 另有专用过滤，见 purifyDiagrams）
-  Vditor.highlightRender(buildHljsOptions(theme), container, VDITOR_LOCAL_CDN);
-  Vditor.mathRender(container, { cdn: VDITOR_LOCAL_CDN, math: buildMathOptions() });
-  Vditor.mermaidRender(container, VDITOR_LOCAL_CDN, theme);
-
-  const settled = await waitForRenderSettled(container, timers, () => disposed);
-  purifyDiagrams(container);
-
   let disposeHeadingTracking: () => void = () => undefined;
 
-  // 等待期间可能已经被 dispose（用户又开了另一个文件）：
-  // 此时绝不能再挂监听，否则这批监听的 dispose 句柄已经被调用过，永远解不掉。
-  if (!disposed) {
-    // 超时收尾：Mermaid 可能在超时之后才吐出 SVG，补两次兜底过滤，避免未过滤产物留在 DOM 里
-    if (!settled) {
-      for (const at of DIAGRAM_RESWEEP_MS) {
-        const timer = window.setTimeout(() => {
-          timers.delete(timer);
-          if (!disposed) {
-            purifyDiagrams(container);
-          }
-        }, at);
-        timers.add(timer);
-      }
-    }
-
-    // 6) 代码块增强（在高亮之后做：hljs 会重写 innerHTML，但 textContent 不变）
-    enhanceCodeBlocks(
-      container,
-      options.isLarge === true ? LARGE_DOC_CODE_BLOCK_LIMIT : Number.POSITIVE_INFINITY,
-      abort.signal,
-      timers,
-    );
-
-    // 7) 滚动高亮：大文件降级为节流计算
-    const onActiveHeading = options.onActiveHeading;
-    if (onActiveHeading !== undefined) {
-      disposeHeadingTracking =
-        options.isLarge === true
-          ? observeHeadingsThrottled(container, onActiveHeading)
-          : observeHeadings(container, onActiveHeading);
-    }
-  }
-
-  const stats: DocumentStats = {
-    charCount: countWords(plainText),
-    lineCount: countLines(body),
-    encoding: options.encoding,
-    renderMs: Math.round(performance.now() - startedAt),
-  };
-
-  // 8) 打印模板：所有异步渲染都已落地才发信号（DG 7.2-4）
-  if (options.emitPrintReadySignal === true) {
-    await emitPrintReady();
-  }
+  const stage = createRenderStage(container);
+  const host = stage.host;
 
   const dispose = (): void => {
     if (disposed) {
@@ -1087,7 +1247,132 @@ export async function renderMarkdown(options: RenderOptions): Promise<RenderResu
     });
     timers.clear();
     disposeHeadingTracking();
+    // 已搬运时舞台已空，remove 是纯清理；未搬运时这一步把半成品整个丢掉
+    stage.dispose();
   };
 
-  return { outline, frontmatter, stats, dispose };
+  /** 本次渲染是否已经作废：自身被 dispose，或调用方已切到别的文档 */
+  const cancelled = (): boolean => disposed || options.signal?.aborted === true;
+
+  const buildStats = (charCount: number): DocumentStats => ({
+    charCount,
+    lineCount: countLines(body),
+    encoding: options.encoding,
+    renderMs: Math.round(performance.now() - startedAt),
+  });
+
+  let outline: OutlineNode[] = [];
+  let charCount = 0;
+
+  try {
+    ensureOptionalAssetStubs();
+
+    // 1) Markdown → HTML（lute 内部已按 sanitize:true 过滤一遍，这是第一层）
+    const html = await Vditor.md2html(body, buildPreviewOptions(theme));
+
+    // 2) 第二层：先净化字符串再写入，绝不把未净化的 HTML 挂到已连接的节点上
+    host.innerHTML = purifyHtml(html);
+    // 与 previewRender 对齐的两个类名：vditor-reset 是正文排版基类，
+    // vditor-reset--anchor 对应 anchor:1（标题锚点靠左），阅读区样式层按需接管。
+    host.classList.add("vditor-reset", "vditor-reset--anchor");
+
+    // 统计要在「增强 DOM」之前取，也要在属性卡片插入之前取：
+    // 语言标签、复制按钮、frontmatter 的键值都不属于正文字数
+    charCount = countWords(host.textContent ?? "");
+
+    // 2.5) frontmatter 落地（card / raw / hidden）
+    renderFrontmatter(
+      host,
+      frontmatter,
+      frontmatterRaw,
+      options.frontmatterDisplay ?? "card",
+    );
+
+    // 3) 图片：本地改写 + 外链拦截
+    rewriteImages(host, options.baseDir, abort.signal);
+
+    // 3.5) 表格：包进 .md-table-wrap 横向滚动容器（列宽自适应下超宽表格不裁切）
+    wrapTables(host);
+
+    // 4) 大纲：id 此刻定稿，搬运不会改变它，因此可以立刻回填（2.8）
+    outline = buildOutline(host);
+    options.onOutlineReady?.(outline);
+    options.onStatsReady?.(buildStats(charCount));
+
+    // 5) 三个渲染器（产物来自本地可信库；Mermaid 另有专用过滤，见 purifyDiagrams）
+    Vditor.highlightRender(buildHljsOptions(theme), host, VDITOR_LOCAL_CDN);
+    Vditor.mathRender(host, { cdn: VDITOR_LOCAL_CDN, math: buildMathOptions() });
+    Vditor.mermaidRender(host, VDITOR_LOCAL_CDN, theme);
+
+    const settled = await waitForRenderSettled(host, timers, cancelled);
+
+    // 6) 等待期间用户可能已经开了别的文件——整批丢弃，绝不覆盖新文档。
+    //    这一步放在过滤与增强之前：作废的 DOM 不会进入任何容器，也就没有再加工的意义。
+    if (cancelled()) {
+      stage.dispose();
+      return {
+        outline,
+        frontmatter,
+        stats: buildStats(charCount),
+        committed: false,
+        dispose,
+      };
+    }
+
+    purifyDiagrams(host);
+
+    // 7) 代码块增强（在高亮之后做：hljs 会重写 innerHTML，但 textContent 不变）
+    //    仍在离屏阶段完成：监听器随节点一起搬家，搬完即可用
+    enhanceCodeBlocks(
+      host,
+      options.isLarge === true ? LARGE_DOC_CODE_BLOCK_LIMIT : Number.POSITIVE_INFINITY,
+      abort.signal,
+      timers,
+    );
+
+    container.classList.add("vditor-reset", "vditor-reset--anchor");
+    // 三步必须同步连做：中间一旦让出主线程就会画出一帧空容器，白闪就是这么来的
+    options.onBeforeCommit?.(container);
+    container.replaceChildren(...Array.from(host.childNodes));
+    options.onCommit?.(container);
+    committed = true;
+    stage.dispose();
+
+    // 8) 超时收尾：Mermaid 可能在超时之后才吐出 SVG，补两次兜底过滤（此时节点已在真实容器里）
+    if (!settled) {
+      for (const at of DIAGRAM_RESWEEP_MS) {
+        const timer = window.setTimeout(() => {
+          timers.delete(timer);
+          if (!disposed) {
+            purifyDiagrams(container);
+          }
+        }, at);
+        timers.add(timer);
+      }
+    }
+
+    // 9) 滚动高亮：必须挂在真实容器上（IntersectionObserver 的 root 要取阅读区滚动壳）
+    const onActiveHeading = options.onActiveHeading;
+    if (onActiveHeading !== undefined && !disposed) {
+      disposeHeadingTracking =
+        options.isLarge === true
+          ? observeHeadingsThrottled(container, onActiveHeading)
+          : observeHeadings(container, onActiveHeading);
+    }
+  } catch (error) {
+    // 失败路径同样要收走舞台，否则每失败一次就在 body 上留一坨离屏 DOM
+    if (!committed) {
+      dispose();
+    }
+    throw error;
+  }
+
+  const stats = buildStats(charCount);
+
+  // 10) 打印模板：所有异步渲染都已落地才发信号（DG 7.2-4）
+  if (options.emitPrintReadySignal === true) {
+    await emitPrintReady();
+  }
+
+  return { outline, frontmatter, stats, committed, dispose };
 }

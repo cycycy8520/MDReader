@@ -101,9 +101,12 @@
   --md-zoom: 1;
   /* 行高一律用无单位比值：它会按各自元素的字号折算，字号放大时行距自动跟上
      （写成 28px 这类绝对值就是旧实现「字号一变行距不跟、大字挤成一坨」的根因）。
-     1.5 = github-markdown-css 基底原值，保持与 MPE 同源观感；
+     取值 **1.75 而非基底的 1.5**：基底那个数是给英文排的（词间有空格做视觉喘息），
+     中文方块字密度高、字间无空隙，1.5 会挤成一片墙——这是「阅读性差」影响面最广的
+     来源，每一行都受影响。中文排版通行 1.7–1.8。（2026-08-18 实测确认基底为 1.5，
+     四点五节另有标题反向收紧到 1.4，避免大字号下标题散架。）
      整体调松紧只改这一个数，正文与标题会各自按自己的字号重新折算。 */
-  --md-reading-leading: 1.5;
+  --md-reading-leading: 1.75;
 }
 
 .md-content {
@@ -222,14 +225,10 @@
    实测依据：2026-08-18 对渲染产物逐元素测量（正文行高实测 24px = 1.5 倍）。
    ══════════════════════════════════════════════════════════════ */
 
-/* 【最重要的一条】行高：基底 1.5 是英文舒适值。中文方块字密度高、
-   词间没有空格喘息，1.5 会挤成一片墙 —— 这是「阅读性差」影响面最广的来源
-   （每一行都受影响，比表格问题更伤）。中文排版通行 1.7–1.8，取 1.75。
-   用无单位值：子元素按各自字号继承，标题与代码块不会被一起撑开。
-   双类名选择器(0,2,0) 压过基底的 .markdown-body(0,1,0)。 */
-.markdown-body.md-content {
-  line-height: 1.75;
-}
+/* 【行高】已上移到第二节的 --md-reading-leading（本文件唯一行高源），取值 1.75。
+   这里不再重复声明——曾经两处并存（那里 1.5、这里 1.75），靠特异性决胜负，
+   属于典型的「两个真相」：改任一处都可能不生效，排查时还会怀疑是缓存。
+   要调松紧只改 :root 的 --md-reading-leading 一个数。 */
 
 /* 标题反向收紧：大字号再乘 1.75 会散架，标题要紧凑成块 */
 .md-content :where(h1, h2, h3, h4, h5, h6) {
@@ -332,10 +331,21 @@
 
 /* 表格横向滚动包裹：基底把 table 自身设为滚动容器（display:block + overflow:auto），
    会丢掉 table 布局语义；渲染层（preview.ts wrapTables）统一把裸 table 包进
-   .md-table-wrap 后，滚动交给包裹层，表格自身恢复 display:table，
-   且 max-width:none 保证超宽表格绝不被裁切、只在包裹层内滚动（用户最高优先诉求） */
+   .md-table-wrap 后，滚动交给包裹层，表格自身恢复 display:table。
+
+   【选择器为什么是后代而不是直接子级】（UPGRADE_PLAN 2.4）
+   wrapTables 遍历的是 container.querySelectorAll("table") —— **所有** table 都会被包裹，
+   包括嵌套在 li / blockquote / details 里的。所以本节一律用后代选择器
+   `.md-content .md-table-wrap`，任何层级的包裹壳都命中。
+   曾经存在过的 `.md-content > table` 直接子级特判已删除、**不得再加**：
+   它只认顶层表格，与包裹层规则同时命中一张表时两套 display/width 会互相打架，
+   而嵌套表格又完全落在它的射程之外（正是「列表里的宽表把横向滚动条转嫁给阅读区」的老病根）。
+   现在的分工是唯一的：**包裹壳负责滚动，table 负责布局**，没有第三种情况。 */
 .md-content .md-table-wrap {
   overflow-x: auto;
+  /* 自身绝不外溢：嵌套在 li / blockquote 里时，包裹壳的宽度来自那一层的内容盒，
+     这条上限保证「超宽表格的横向滚动只发生在壳内」——阅读区永远不出现横向滚动条。 */
+  max-width: 100%;
   /* 与基底给 table 的 margin-bottom: var(--base-size-16) 等值，跟随字号呼吸 */
   margin-bottom: var(--md-reading-size);
 }
@@ -381,24 +391,118 @@
   user-select: none;
 }
 
-/* frontmatter 属性卡片（FR-14）——业务专属 UI，基底不可能有 */
+/* ── 大文件提示条 .md-large-hint（UPGRADE_PLAN 2.8 / DG 6.6）──────
+   用途：isLarge 文档在正文顶部说明「本篇很大，已分段渲染 / 大纲稍后补全」这类事实。
+
+   三条规格，逐条对应实现：
+   ① **细字条**：一行 13/20 的系统字号（不吃 --md-reading-size，也就不随缩放变大）。
+      它是「系统在说话」，与 index.css 的 .md-alert-bar 同族、同字号；
+      正文放到 20px 时这条仍是 13px，读者一眼就知道它不是文档内容。
+   ② **text-tertiary**：全条只有一档最淡的字色，无底色、无描边、无圆角——
+      有框就成了卡片，会在正文最开头抢走第一眼。
+   ③ **不占正文空间**：本身只有一行高，且下面这条相邻兄弟规则把紧随其后的元素
+      上外边距归零。基底有 `.markdown-body > *:first-child { margin-top: 0 }`，
+      提示条一旦插进来当了首元素，原本的首个标题就退到第二位、凭空长出 24px 上间距，
+      整篇正文被顶下去一截——「加个提示条而已，怎么全文位置都变了」的经典来源。
+      选择器带 .md-content(0,2,0) 才压得过基底的 .markdown-body h1(0,1,1)。
+
+   不可选中：与代码块工具条 / 外链图占位同理，别让它混进复制出去的正文。 */
+.md-large-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 只在下方留一点点气口；上方不留，紧贴阅读区顶部内边距 */
+  margin: 0 0 8px;
+  color: var(--md-text-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  user-select: none;
+}
+
+/* 连后代一起写死：index.css 的 `[data-reading-root] * { user-select: text }` 是
+   直接命中后代的规则，光靠上面那句父级 none 的继承压不住它。
+   带 .md-content 前缀的两条把特异性提到 (0,2,0) 稳压；不带前缀的一条兜住
+   「提示条被挂在阅读区之外」的接法（本文件在源顺序上更靠后，同分也胜）。 */
+.md-large-hint *,
+.md-content .md-large-hint,
+.md-content .md-large-hint * {
+  user-select: none;
+}
+
+/* 图标锁尺寸并吃同一档字色，文字再长也不挤压它 */
+.md-large-hint svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.md-content .md-large-hint + * {
+  margin-top: 0;
+}
+
+/* ── frontmatter 属性卡片（FR-14 / UPGRADE_PLAN 2.5）───────────────
+   业务专属 UI，基底不可能有。设置项 frontmatterDisplay 三态：
+     card   → 渲染层输出 dt/dd 键值对，本节排成两列属性表
+     raw    → 渲染层输出代码块（pre），本节让它保持「就是一段代码」的观感
+     hidden → 渲染层根本不产出节点，样式层无事可做
+
+   【为什么两种 DOM 都兜】渲染层可能把 .md-frontmatter 打在 dl/pre 自身，
+   也可能打在外层 div 上再套一层 dl/pre。两种接法本节都成立，样式层与渲染层
+   不必为「类名挂哪一层」再对一次口径（对错口径的代价是卡片直接裸奔，肉眼可见）。 */
+
+/* 外壳：无论哪种模式、哪种接法，间距与字号一致 */
 .md-content .md-frontmatter {
   margin: 0 0 calc(var(--md-reading-size) * 1.5);
-  padding: calc(var(--md-reading-size) * 0.75) var(--md-reading-size);
-  border: 1px solid var(--md-border-l2);
-  border-radius: 12px;
-  background: var(--md-bg-panel);
   font-size: 0.8125em; /* 13/16 */
   line-height: 1.54; /* 原 20px ÷ 13px */
 }
 
+/* 卡片外观只给非 pre 的外壳：raw 模式若把类打在 pre 上，就让它老老实实走
+   代码块那套（底色/圆角/描边见上面的 .md-content pre），不要套两层框 */
+.md-content .md-frontmatter:not(pre) {
+  padding: calc(var(--md-reading-size) * 0.75) var(--md-reading-size);
+  border: 1px solid var(--md-border-l2);
+  border-radius: 12px;
+  background: var(--md-bg-panel);
+}
+
+/* 两列属性表：键列按最长键自适应（minmax 上限 max-content），值列吃掉余量。
+   用 grid 而不是 dt/dd 的默认块级流：默认流下 dd 会另起一行，
+   长文档头部十来个字段会拉出一屏高的「清单」，卡片就不成其为卡片了。
+   dt/dd 严格交替出现（frontmatter 是 Record<string,string>），auto-placement 天然对位。 */
+.md-content dl.md-frontmatter,
+.md-content .md-frontmatter dl {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  column-gap: calc(var(--md-reading-size) * 0.75);
+  row-gap: calc(var(--md-reading-size) * 0.25);
+  margin: 0;
+}
+
 .md-content .md-frontmatter dt {
   color: var(--md-text-tertiary);
+  /* 刻意不写 white-space: nowrap —— max-content 列本来就「有地方就不换行」，
+     真到窄窗挤不下时，宁可键名折行也好过把内容顶出卡片外（nowrap 换来的正是溢出）。 */
+  min-width: 0;
 }
 
 .md-content .md-frontmatter dd {
-  margin: 0 0 0.46em; /* 原 6px ÷ 13px */
+  /* 行距交给 row-gap，这里必须归零：留着旧的 margin-bottom 会与 gap 叠加成双倍行距 */
+  margin: 0;
+  min-width: 0;
   color: var(--md-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* raw 模式的第二种接法：外壳是 div、代码块套在里面。
+   卡片已经给了框与底，内层 pre 再来一套就是「框中框」——让它平铺进卡片。
+   横向滚动仍留给 pre 自己（基底的 overflow:auto），超长的 YAML 值不会撑破卡片。 */
+.md-content .md-frontmatter > pre {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 /* Mermaid / KaTeX：Vditor 渲染产物的容器类，基底不认识。

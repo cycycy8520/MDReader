@@ -65,6 +65,7 @@ import {
 import { t } from "./i18n/zh-CN";
 import { renderMarkdown, resolveLocalPath } from "./render/preview";
 import {
+  appInfo,
   onDragDrop,
   onFileChanged,
   onFileRemoved,
@@ -79,9 +80,11 @@ import {
   windowIsMaximized,
   windowMinimize,
   windowToggleMaximize,
+  type AppInfo,
 } from "./services/ipc";
 import {
   describeError,
+  MAX_OPEN_MB,
   useFileSessionStore,
   type SessionErrorKind,
   type SessionPhase,
@@ -98,6 +101,7 @@ import {
   ENCODING_LABEL,
   type OutlineNode,
   type RecentFile,
+  type ScrollAnchor,
   type Theme,
 } from "./types";
 
@@ -114,6 +118,15 @@ const HEADING_JUMP_PADDING = 16;
 const ACTIVE_SYNC_SUPPRESS_MS = 320;
 /** ● 刷新指示点存活时长（DG 6.4-7：闪一次即隐，不弹 toast） */
 const REFRESH_FLASH_MS = 600;
+
+/**
+ * 滚动锚点写入节流（FR-16 / UPGRADE_PLAN 2.2）：**尾沿**触发。
+ *
+ * 取尾沿而不是等间隔连发，是因为每次写入都会更新 recentFiles 全表（→ 左栏重渲染）
+ * 并发一次 IPC；滚动进行中每 500ms 抖一下界面，代价远大于收益。
+ * 尾沿的唯一风险是"滚到一半崩溃丢位置"，已由「切文档前 / 窗口失焦时立即落一次」补齐。
+ */
+const SCROLL_ANCHOR_IDLE_MS = 500;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -191,6 +204,18 @@ function samePath(a: string | null, b: string | null): boolean {
   return (
     a.replace(/\//g, "\\").toLowerCase() === b.replace(/\//g, "\\").toLowerCase()
   );
+}
+
+/**
+ * 取该文档上次的滚动锚点（FR-16）。
+ * 真源是最近列表条目：Rust 侧把它存在 recent.json 里，前端 store 是同一份的镜像。
+ * 从未打开过的文件没有条目 → 返回 null → 打开后停在顶部（规格如此）。
+ */
+function findScrollAnchor(path: string): ScrollAnchor | null {
+  const entry = useRecentFilesStore
+    .getState()
+    .items.find((item) => samePath(item.path, path));
+  return entry?.scrollAnchor ?? null;
 }
 
 function pad2(value: number): string {
@@ -408,6 +433,78 @@ function smoothScrollTo(scroller: HTMLElement, top: number): void {
     }
   };
   requestAnimationFrame(step);
+}
+
+/* ── 滚动位置记忆（FR-16 / 2.2） ─────────────────────────────────
+   锚定「标题 id + 相对视口顶的像素偏移」而不是裸 scrollTop：字号、缩放、窗口宽度
+   一变，同一个 scrollTop 对应的内容就完全不同了；标题 id 则跨这些变化保持稳定。 */
+
+/**
+ * 读当前视线位置：取**视口顶部往下第一个**带 id 的标题，记它距容器顶的像素偏移。
+ *
+ * 三种退化，按优先级：
+ *   1. 视口下方没有标题了（读到了文末）→ 取最后一个标题，偏移为负值，同样精确；
+ *   2. 全文没有任何带 id 的标题 → headingId 留空串，偏移退化为裸 scrollTop；
+ *   3. 恢复时 id 已不存在（文档被改写）→ 见 applyScrollAnchor 的兜底。
+ */
+function readScrollAnchor(scroller: HTMLElement, container: HTMLElement): ScrollAnchor {
+  const rootTop = scroller.getBoundingClientRect().top;
+  const headings = Array.from(
+    container.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6"),
+  );
+  let last: HTMLElement | null = null;
+
+  for (const heading of headings) {
+    if (heading.id === "") {
+      continue;
+    }
+    const offset = heading.getBoundingClientRect().top - rootTop;
+    if (offset >= 0) {
+      return { headingId: heading.id, offset: Math.round(offset) };
+    }
+    last = heading;
+  }
+
+  if (last !== null) {
+    return {
+      headingId: last.id,
+      offset: Math.round(last.getBoundingClientRect().top - rootTop),
+    };
+  }
+  return { headingId: "", offset: Math.round(scroller.scrollTop) };
+}
+
+/**
+ * 把锚点还原成 scrollTop。id 优先；id 失效（标题被删/改名）时退像素偏移——
+ * 那种情况下位置只是"大致对"，但比一律归顶强，也比停在错误位置诚实。
+ */
+function applyScrollAnchor(
+  scroller: HTMLElement,
+  container: HTMLElement,
+  anchor: ScrollAnchor,
+): void {
+  if (anchor.headingId !== "") {
+    const target = container.querySelector<HTMLElement>(
+      `#${CSS.escape(anchor.headingId)}`,
+    );
+    if (target !== null) {
+      const top =
+        scroller.scrollTop +
+        target.getBoundingClientRect().top -
+        scroller.getBoundingClientRect().top -
+        anchor.offset;
+      scroller.scrollTop = Math.max(0, top);
+      return;
+    }
+  }
+  scroller.scrollTop = Math.max(0, anchor.offset);
+}
+
+function sameAnchor(a: ScrollAnchor | null, b: ScrollAnchor | null): boolean {
+  if (a === null || b === null) {
+    return a === b;
+  }
+  return a.headingId === b.headingId && a.offset === b.offset;
 }
 
 /* ── 右键菜单（3.2 / 附录 A） ────────────────────────────────────
@@ -1238,7 +1335,9 @@ function ReadingError({
       ? t.reading.fileMissing
       : kind === "render"
         ? t.reading.renderFailed
-        : t.reading.readFailed;
+        : kind === "too-large"
+          ? t.reading.tooLarge
+          : t.reading.readFailed;
 
   return (
     <div className="mx-auto max-w-reading px-8 py-8 animate-fade-in">
@@ -1246,6 +1345,12 @@ function ReadingError({
       {path === null ? null : (
         <p className="mt-1.5 break-all text-ui-sm text-tertiary">{path}</p>
       )}
+      {/* 体积拒开不是"出错了"，而是"我们主动不做"，必须把上限说清楚（2.8） */}
+      {kind === "too-large" ? (
+        <p className="mt-1.5 text-ui-sm text-secondary">
+          {t.reading.tooLargeDetail(MAX_OPEN_MB)}
+        </p>
+      ) : null}
       {message === null ? null : (
         <p className="mt-1 break-all text-ui-xs text-caption">{message}</p>
       )}
@@ -1281,6 +1386,13 @@ interface ReadingAreaProps {
   /** 缩放百分比 90–150（settings.zoomPercent） */
   readonly zoomPercent: number;
   readonly codeWrap: boolean;
+  /**
+   * 本次读入是静默刷新（外部保存 / F5 / 切主题）：不显示 LoadingLine、不压暗旧正文。
+   * 2.1 的核心之一——用户没有主动做任何事，界面就不该有任何"在忙"的表演。
+   */
+  readonly silent: boolean;
+  /** 大文件降级提示条（FR-01 / 2.8） */
+  readonly isLarge: boolean;
   readonly onOpenFile: () => void;
   readonly onRetry: () => void;
 }
@@ -1295,10 +1407,14 @@ function ReadingArea({
   fontSize,
   zoomPercent,
   codeWrap,
+  silent,
+  isLarge,
   onOpenFile,
   onRetry,
 }: ReadingAreaProps) {
   const busy = phase === "loading" || phase === "rendering";
+  /** 只有"用户主动等待"才需要反馈；静默刷新期间界面必须纹丝不动 */
+  const showBusy = busy && !silent;
 
   /**
    * 字号与缩放以 CSS 变量注入，样式层用 calc(var(--md-reading-font) * var(--md-zoom))
@@ -1342,7 +1458,14 @@ function ReadingArea({
         style={readingVars}
         className={phase === "empty" || phase === "error" ? "hidden" : ""}
       >
-        {busy ? (
+        {/* 大文件降级说明：一行小字，说清楚"降了什么"而不是只说"文件大"（DG 6.6） */}
+        {isLarge ? (
+          <p className="mb-2 flex items-center gap-1.5 text-ui-xs text-tertiary">
+            <IconAlert size={12} className="shrink-0" />
+            {t.reading.largeMode}
+          </p>
+        ) : null}
+        {showBusy ? (
           <LoadingLine
             label={
               phase === "rendering" ? t.reading.rendering : t.reading.opening
@@ -1350,14 +1473,20 @@ function ReadingArea({
           />
         ) : null}
         {/* markdown-body：github-markdown-css 排版基底（MPE 同源观感）；
-            md-content：本项目增量与变量桥的作用域，样式在 styles/markdown.css。
+            md-content：本项目增量与变量桥的作用域，样式在 styles/markdown.css；
+            vditor-reset(--anchor)：Vditor 正文基类，写在 className 里而不是让渲染层
+            imperative 加——React 一旦因别的原因重写 className，加上去的类会被抹掉。
             变量与 data-code-wrap 在外层与本层各挂一份：外层保证「非正文的阅读区元素」
-            也能取到变量，本层保证样式层无论按哪一级选择器写都命中。 */}
+            也能取到变量，本层保证样式层无论按哪一级选择器写都命中。
+            切换文档的读入期把旧正文压暗并锁交互：旧内容仍在（不白闪），
+            但明确表示"这不是最新的"，且不会被误点（2.8）。 */}
         <div
           ref={contentRef}
           data-code-wrap={codeWrapAttr}
           style={readingVars}
-          className="markdown-body md-content"
+          className={`markdown-body md-content vditor-reset vditor-reset--anchor ${
+            showBusy ? "pointer-events-none opacity-40" : ""
+          }`}
         />
       </div>
     </main>
@@ -1563,6 +1692,86 @@ function DragOverlay({ supported }: { readonly supported: boolean }) {
   );
 }
 
+/* ── 关于对话框（附录 A.1 关于组，批次 2 点亮） ───────────────── */
+
+interface AboutDialogProps {
+  /** 后端 app_info() 的结果；null = 还没回来或该命令尚未就绪，逐项显示占位 */
+  readonly info: AppInfo | null;
+  readonly onOpenLogDir: () => void;
+  readonly onClose: () => void;
+}
+
+/**
+ * 极简对话框：应用名 + 三行事实 + 一个出路。不做检查更新（M2）、不做致谢页。
+ * 遮罩点击与 Esc 都关（Esc 在全局 keydown 的语义链里，先于 closeTopLayer）。
+ * 沿用右键菜单卡的外观（rounded-card + border-float + bg-layer + shadow-lv3），
+ * 不新增任何 CSS。
+ */
+function AboutDialog({ info, onOpenLogDir, onClose }: AboutDialogProps) {
+  const rows: readonly { readonly label: string; readonly value: string }[] = [
+    { label: t.about.version, value: info?.version ?? t.about.unknown },
+    {
+      label: t.about.mode,
+      value:
+        info === null
+          ? t.about.unknown
+          : info.portable
+            ? t.about.modePortable
+            : t.about.modeInstalled,
+    },
+    { label: t.about.dataDir, value: info?.dataDir ?? t.about.unknown },
+  ];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-mask p-6 animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={t.contextMenu.about}
+        // 卡内点击不该关窗（点路径想选中复制是很自然的动作）
+        onClick={(event) => event.stopPropagation()}
+        className="w-full max-w-sm rounded-card border border-float bg-layer p-4 shadow-lv3"
+      >
+        <p className="text-ui font-medium text-primary">{t.app.name}</p>
+
+        <dl className="mt-3 space-y-1.5">
+          {rows.map((row) => (
+            <div key={row.label} className="flex items-baseline gap-2">
+              <dt className="w-16 shrink-0 text-ui-sm text-tertiary">
+                {row.label}
+              </dt>
+              <dd className="min-w-0 flex-1 break-all text-ui-sm text-secondary">
+                {row.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+
+        <div className="mt-4 flex items-center justify-end gap-1">
+          <button
+            type="button"
+            onClick={onOpenLogDir}
+            disabled={info === null}
+            className="flex h-row items-center rounded-row px-2 text-ui text-primary hover:bg-hover disabled:cursor-default disabled:text-tertiary disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            {t.about.openLogDir}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-row items-center rounded-row px-2 text-ui text-primary hover:bg-hover"
+          >
+            {t.common.close}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── 应用外壳 ───────────────────────────────────────────────── */
 
 export default function App() {
@@ -1587,9 +1796,21 @@ export default function App() {
   const zoomPercent = useSettingsStore((state) => state.zoomPercent);
   const fontSize = useSettingsStore((state) => state.fontSize);
   const codeWrap = useSettingsStore((state) => state.codeWrap);
+  const frontmatterDisplay = useSettingsStore((state) => state.frontmatterDisplay);
 
   const scrollerRef = useRef<HTMLElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  /**
+   * 阅读区里**当前这份 DOM 属于哪个文件**。
+   *
+   * 与 session.path 的区别是时机：session.path 在读盘一开始就变了，而 DOM 要到渲染
+   * 搬运完成才变。滚动锚点必须按后者记账，否则读入期间的滚动会被记到新文件头上。
+   * 它同时是 2.3「path 未变即保留滚动位置」的判据。
+   */
+  const renderedPathRef = useRef<string | null>(null);
+  /** 尾沿节流句柄与上次已写入的锚点（去重，避免原地重复写盘） */
+  const anchorTimer = useRef<number | undefined>(undefined);
+  const lastAnchor = useRef<ScrollAnchor | null>(null);
   /** 平滑跳转期间抑制高亮重算，避免沿途逐个点亮 */
   const suppressActiveSyncUntil = useRef(0);
   const refreshTimer = useRef<number | undefined>(undefined);
@@ -1614,6 +1835,10 @@ export default function App() {
    */
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const contextMenuKey = useRef(0);
+  /** 「关于」对话框（附录 A 关于组）。ref 与 state 并存：Esc 语义链要在不重挂监听的前提下读到它 */
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [aboutInfo, setAboutInfo] = useState<AppInfo | null>(null);
+  const aboutOpenRef = useRef(false);
 
   const { path, source, revision, silentRefresh, encoding, isLarge } = session;
 
@@ -1634,6 +1859,39 @@ export default function App() {
     window.clearTimeout(noticeTimer.current);
     setNotice(next);
   }, []);
+
+  /* ── 滚动位置记忆（2.2） ── */
+
+  /**
+   * 立刻记一次当前视线位置。归属以 renderedPathRef 为准（DOM 是谁的就记给谁），
+   * 与 session.path 无关——读入期间两者会短暂不一致，按后者记就会串档。
+   */
+  const captureScrollAnchor = useCallback(() => {
+    window.clearTimeout(anchorTimer.current);
+    anchorTimer.current = undefined;
+
+    const scroller = scrollerRef.current;
+    const container = contentRef.current;
+    const target = renderedPathRef.current;
+    if (scroller === null || container === null || target === null) {
+      return;
+    }
+    const anchor = readScrollAnchor(scroller, container);
+    if (sameAnchor(anchor, lastAnchor.current)) {
+      return;
+    }
+    lastAnchor.current = anchor;
+    useFileSessionStore.getState().setScrollAnchor(anchor);
+    // 写盘走 recentFiles：条目里的 scrollAnchor 既是持久化字段，也是本次会话内
+    // 重新打开同一文件时的读取源（store 里那份不更新，会话内重开就会回到旧位置）
+    useRecentFilesStore.getState().updateScrollAnchor(target, anchor);
+  }, []);
+
+  /** 尾沿节流：滚动停下来 500ms 才记一次（理由见 SCROLL_ANCHOR_IDLE_MS） */
+  const scheduleScrollAnchor = useCallback(() => {
+    window.clearTimeout(anchorTimer.current);
+    anchorTimer.current = window.setTimeout(captureScrollAnchor, SCROLL_ANCHOR_IDLE_MS);
+  }, [captureScrollAnchor]);
 
   /**
    * 打开一个路径。三条防线：
@@ -1663,9 +1921,11 @@ export default function App() {
         });
         return;
       }
+      // 换文档前把当前位置落定：尾沿节流还挂着的话，这一位置本会丢掉
+      captureScrollAnchor();
       void state.openPath(target);
     },
-    [dismissNotice, focusReading, showNotice],
+    [captureScrollAnchor, dismissNotice, focusReading, showNotice],
   );
 
   const openFile = useCallback(() => {
@@ -1880,6 +2140,43 @@ export default function App() {
     setContextMenu(null);
   }, []);
 
+  /* ── 关于对话框 ── */
+
+  /**
+   * 打开「关于」。信息每次现取：便携/安装模式与数据目录在进程内不会变，
+   * 但版本号来自后端，缓存住反而会在热更新调试时骗人。
+   * app_info 尚未就绪（后端还没实装）时对话框照常弹，逐项显示占位——
+   * 绝不因为一个字段拿不到就让菜单项变成"点了没反应"。
+   */
+  const showAbout = useCallback(() => {
+    aboutOpenRef.current = true;
+    setAboutOpen(true);
+    void appInfo()
+      .then(setAboutInfo)
+      .catch((error: unknown) => {
+        console.warn("[app] appInfo failed", error);
+      });
+  }, []);
+
+  const closeAbout = useCallback(() => {
+    aboutOpenRef.current = false;
+    setAboutOpen(false);
+  }, []);
+
+  /** 日志目录：Rust 未回传时按 `dataDir\logs` 拼（与 logging.rs 的约定同源） */
+  const openLogDir = useCallback(() => {
+    if (aboutInfo === null) {
+      return;
+    }
+    const separator = aboutInfo.dataDir.includes("/") ? "/" : "\\";
+    const target =
+      aboutInfo.logDir ??
+      `${aboutInfo.dataDir.replace(/[\\/]+$/, "")}${separator}logs`;
+    void revealInExplorer(target).catch((error: unknown) => {
+      console.warn("[app] reveal log dir failed", error);
+    });
+  }, [aboutInfo]);
+
   /** 失效路径回填（1.8）：探测逻辑在 store，这里只负责挑时机 */
   const refreshMissing = useCallback(() => {
     void useRecentFilesStore.getState().refreshMissing();
@@ -2068,8 +2365,14 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent): void => {
       const key = event.key.toLowerCase();
 
-      // Esc 语义链（DG 6.5）：过滤框有值 → 清空并失焦；否则逐层收浮层；都没有则无动作
+      // Esc 语义链（DG 6.5）：关于对话框 → 过滤框有值则清空并失焦 → 逐层收浮层 → 无动作
       if (event.key === "Escape") {
+        if (aboutOpenRef.current) {
+          event.preventDefault();
+          closeAbout();
+          focusReading();
+          return;
+        }
         const active = document.activeElement;
         if (
           active instanceof HTMLInputElement &&
@@ -2141,7 +2444,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [focusReading, openFile, toggleOutline, toggleSidebar]);
+  }, [closeAbout, focusReading, openFile, toggleOutline, toggleSidebar]);
 
   /* ── 阅读区事件委托：链接点击（1.1）与 Ctrl+滚轮缩放（1.4） ── */
 
@@ -2244,6 +2547,7 @@ export default function App() {
         removeRecent: (filePath) => {
           useRecentFilesStore.getState().remove(filePath);
         },
+        showAbout,
       };
 
       const base = {
@@ -2313,7 +2617,7 @@ export default function App() {
     return () => {
       window.removeEventListener("contextmenu", onContextMenu);
     };
-  }, [focusReading, openDocumentAt, openPath]);
+  }, [focusReading, openDocumentAt, openPath, showAbout]);
 
   /* ── 渲染管线：revision 变化（含同路径重载）即重渲染 ── */
 
@@ -2325,9 +2629,22 @@ export default function App() {
 
     let cancelled = false;
     let disposeRender: (() => void) | null = null;
-    const scroller = scrollerRef.current;
-    // 外部变更 / F5 保持滚动位置；主动切换文档回到顶部（DG 6.1 军规 1）
-    const keepTop = silentRefresh && scroller !== null ? scroller.scrollTop : 0;
+    // 中止令牌：切文档时 abort，渲染层据此放弃搬运——旧渲染再也不会盖到新文档上
+    const abort = new AbortController();
+
+    /**
+     * 2.3：判据从"是不是静默刷新"改成"**路径变没变**"。
+     * 外部保存、F5、切主题、改 frontmatter 显示模式……凡是同一篇文档的重渲染一律保位，
+     * 只有用户主动换文档才归顶。此前只认 silentRefresh，于是切主题必跳顶。
+     */
+    const keepPosition = samePath(renderedPathRef.current, path);
+
+    // 换文档：先把旧文档的位置落定（此刻 DOM 与 renderedPathRef 都还是旧的）
+    if (!keepPosition) {
+      captureScrollAnchor();
+    }
+    /** onBeforeCommit 里读到的旧滚动位置（读晚了会被新内容的高度钳掉） */
+    let carriedTop = 0;
 
     void renderMarkdown({
       source,
@@ -2336,10 +2653,52 @@ export default function App() {
       baseDir: dirNameOf(path),
       encoding: encoding ?? "utf8",
       isLarge,
+      frontmatterDisplay,
+      signal: abort.signal,
       onActiveHeading: handleActiveHeading,
+
+      // 2.8：DOM 一落地就回填大纲与字数，不再等 Mermaid/KaTeX 的 8s 就绪超时
+      onOutlineReady: (outline) => {
+        useFileSessionStore.getState().setEarlyRender({ outline });
+      },
+      onStatsReady: (stats) => {
+        useFileSessionStore.getState().setEarlyRender({ stats });
+      },
+
+      onBeforeCommit: () => {
+        const scroller = scrollerRef.current;
+        carriedTop = keepPosition && scroller !== null ? scroller.scrollTop : 0;
+      },
+      // 与 replaceChildren 同一个同步块：中间不让出主线程，就不会画出中间态
+      onCommit: (committedContainer) => {
+        renderedPathRef.current = path;
+        lastAnchor.current = null;
+        const scroller = scrollerRef.current;
+        if (scroller === null) {
+          return;
+        }
+        if (keepPosition) {
+          scroller.scrollTop = carriedTop;
+          return;
+        }
+        /**
+         * 2.2：恢复锚点**到这一刻才查**。
+         * 冷启动时 recentFiles.load() 与 openPath 是并发的，在 effect 开头查很可能
+         * 查到空表（双击 .md 启动必然如此）；而本篇自己的滚动写入要等 renderedPathRef
+         * 指向它之后才会发生（就在下一行之前刚设好），所以这里读到的一定是上次的值。
+         */
+        const restoreAnchor = findScrollAnchor(path);
+        if (restoreAnchor !== null) {
+          applyScrollAnchor(scroller, committedContainer, restoreAnchor);
+        } else {
+          // 主动新开、且没有记忆的文档：顶部
+          scroller.scrollTop = 0;
+        }
+      },
     })
       .then((result) => {
-        if (cancelled) {
+        // committed=false 表示渲染期间被中止，结果整批作废（内容也没进容器）
+        if (cancelled || !result.committed) {
           result.dispose();
           return;
         }
@@ -2354,19 +2713,17 @@ export default function App() {
           frontmatter: result.frontmatter,
           stats: result.stats,
         });
-        if (scroller !== null) {
-          scroller.scrollTop = keepTop;
-        }
         suppressActiveSyncUntil.current = 0;
         hardenToolbarSelection(container);
 
         // 主动打开的文档把焦点交给阅读区：PgDn/PgUp/Space/Home/End 立刻能翻页。
-        // 静默刷新不抢焦点（用户可能正在左栏过滤框里打字）。
-        if (!silentRefresh && scroller !== null) {
-          scroller.focus({ preventScroll: true });
+        // 同一篇的重渲染（保存 / F5 / 切主题）不抢焦点——用户可能正在左栏过滤框里打字。
+        if (!keepPosition && scrollerRef.current !== null) {
+          scrollerRef.current.focus({ preventScroll: true });
         }
 
-        // 相对 .md 链接带 #fragment：等到这一刻（渲染 settled）再跳，早跳必落空
+        // 相对 .md 链接带 #fragment：等到这一刻（渲染 settled）再跳，早跳必落空。
+        // 它优先于滚动记忆——用户点的是"去那一节"，不是"回上次的位置"。
         const pending = pendingAnchor.current;
         pendingAnchor.current = null;
         if (pending !== null && samePath(pending.path, path)) {
@@ -2384,11 +2741,54 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      abort.abort();
       disposeRender?.();
     };
     // source / silentRefresh / encoding / isLarge 与 revision 同批更新（fileSession 的一次 set），
-    // 故只用 revision 当触发令牌，避免同一次读入触发两次渲染。
-  }, [path, revision, resolvedTheme, handleActiveHeading, jumpToAnchor]);
+    // 故只用 revision 当触发令牌，避免同一次读入触发两次渲染；
+    // resolvedTheme 与 frontmatterDisplay 是「不重读盘也要重渲染」的两个设置，需单列。
+  }, [
+    path,
+    revision,
+    resolvedTheme,
+    frontmatterDisplay,
+    captureScrollAnchor,
+    handleActiveHeading,
+    jumpToAnchor,
+  ]);
+
+  /* ── 滚动 → 锚点记账（2.2） ── */
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (scroller === null) {
+      return;
+    }
+    // 切走窗口多半意味着"看完了去别处"，此时立刻落定，别指望尾沿还有机会跑
+    scroller.addEventListener("scroll", scheduleScrollAnchor, { passive: true });
+    window.addEventListener("blur", captureScrollAnchor);
+    return () => {
+      scroller.removeEventListener("scroll", scheduleScrollAnchor);
+      window.removeEventListener("blur", captureScrollAnchor);
+      window.clearTimeout(anchorTimer.current);
+    };
+  }, [captureScrollAnchor, scheduleScrollAnchor]);
+
+  /**
+   * 错误态清空阅读区。
+   *
+   * 双缓冲之后阅读区不再被中途清空，好处是没有白闪，副作用是「上一篇的正文」会一直
+   * 留在容器里；错误页把容器 hidden 掉，下次打开新文件的读入期它又会重新露出来，
+   * 显示的却是两篇之前的内容。所以进错误态时显式清一次，并断开 DOM 的归属。
+   */
+  useEffect(() => {
+    if (session.phase !== "error") {
+      return;
+    }
+    contentRef.current?.replaceChildren();
+    renderedPathRef.current = null;
+    lastAnchor.current = null;
+  }, [session.phase]);
 
   /* ── 派生数据 ── */
 
@@ -2454,6 +2854,8 @@ export default function App() {
           fontSize={fontSize}
           zoomPercent={zoomPercent}
           codeWrap={codeWrap}
+          silent={silentRefresh}
+          isLarge={isLarge}
           onOpenFile={openFile}
           onRetry={retry}
         />
@@ -2489,6 +2891,14 @@ export default function App() {
           onClose={closeContextMenu}
         />
       )}
+
+      {aboutOpen ? (
+        <AboutDialog
+          info={aboutInfo}
+          onOpenLogDir={openLogDir}
+          onClose={closeAbout}
+        />
+      ) : null}
     </div>
   );
 }

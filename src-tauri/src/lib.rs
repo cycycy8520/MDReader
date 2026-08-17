@@ -29,8 +29,10 @@ pub mod settings;
 pub mod share;
 pub mod shell_integ;
 
+use std::sync::{Mutex, OnceLock};
+
 use tauri::plugin::TauriPlugin;
-use tauri::{App, Runtime, Url, Webview};
+use tauri::{App, Runtime, Url, Webview, WindowEvent};
 
 /// 「打开某个路径」事件名 —— 前后端契约，前端 `services/ipc.ts` 的
 /// `EVENT_OPEN_PATH` 必须逐字一致（单实例转发 / 文件关联双击都汇聚到这里）。
@@ -53,19 +55,28 @@ const APP_ORIGIN_HOST: &str = "tauri.localhost";
 /// 先 `WebviewWindowBuilder::from_config(...).build()`，再调用本函数），
 /// 所以这里能直接拿到主窗口的 WebView 句柄。
 ///
-/// TODO(M1)：
-/// * 恢复窗口几何（[`settings::WindowGeometry`]，DG 6.2「窗口记忆」，批次 2.7），
-///   异常位置回落主屏居中；
-/// * 把 [`settings::Settings`] 注入 `app.manage()` 供各命令共享。
+/// TODO(M1)：把 [`settings::Settings`] 注入 `app.manage()` 供各命令共享。
 pub fn run(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         "MDNaonao 启动（严格只读模式）"
     );
 
+    // 模式（便携/安装）+ 数据根绝对路径：用户问「我的设置去哪了」时的一手证据（2.0）
+    settings::log_data_root();
+    if let Err(err) = settings::ensure_data_root_writable() {
+        // 不阻塞启动——看文档这件事不依赖写盘；但绝不静默：
+        // 否则用户会经历「改了设置、重启全没了」而不知道为什么。
+        tracing::error!(%err, "数据目录不可写：本次运行的设置/最近列表/窗口几何都无法保存");
+    }
+
     // 先驯服 WebView 再做别的：它只是几次 COM 属性写入（微秒级），
     // 而一旦后面的步骤提前 return，用户就会拿到一个「浏览器味」的窗口。
     tame_webview(app);
+
+    // 几何恢复要赶在窗口被用户看见之前完成，因此排在耗时的命令行分发之前（2.7）
+    restore_window_geometry(app);
+    track_window_geometry(app);
 
     // 命令行解析失败不阻塞启动：内部已降级为「无参数启动」
     cmdline::handle_first_instance(app.handle())?;
@@ -122,6 +133,245 @@ fn is_app_origin(url: &Url) -> bool {
         "tauri" => true,
         _ => false,
     }
+}
+
+// ---------------------------------------------------------------------------
+// 窗口几何记忆（UPGRADE_PLAN 2.7 / DG 6.2「窗口记忆」）
+// ---------------------------------------------------------------------------
+
+/// 判定「这扇窗还找得回来」所需的最小可见交集（物理像素）。
+///
+/// 不要求整窗可见：把窗口拖到屏幕边缘只露一角是用户的自由，粗暴地拉回来才叫添乱。
+/// 但露出来的部分必须够抓住——120×60 大约是「标题栏拖拽区 + 一个按钮」的量级。
+const MIN_VISIBLE_WIDTH: i64 = 120;
+const MIN_VISIBLE_HEIGHT: i64 = 60;
+
+/// 显示器可视区矩形（物理像素，取 work_area 而非 size：任务栏占掉的那条不算可见区）。
+#[derive(Debug, Clone, Copy)]
+struct MonitorRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl MonitorRect {
+    fn from_monitor(monitor: &tauri::Monitor) -> Self {
+        let area = monitor.work_area();
+        Self {
+            x: area.position.x,
+            y: area.position.y,
+            width: area.size.width,
+            height: area.size.height,
+        }
+    }
+}
+
+/// 记录下来的窗口矩形是否与**某台**显示器有足够交集。
+///
+/// 典型失效场景：在副屏上关掉应用 → 拔掉副屏 → 再启动。记录的坐标（比如 x=2560）
+/// 此刻落在虚拟桌面之外，窗口会被还原到「屏幕外」——任务栏有图标、屏幕上什么都没有。
+///
+/// 枚举不到显示器时返回 `true`：宁可按记录还原，也不要因为一次 API 失败就把
+/// 用户精心摆好的窗口无缘无故拽到屏幕中央。
+fn geometry_is_visible(monitors: &[MonitorRect], x: i32, y: i32, width: u32, height: u32) -> bool {
+    if monitors.is_empty() {
+        return true;
+    }
+    // 全程 i64：i32 坐标 + u32 尺寸相加会溢出 i32（脏配置里 x=2_000_000_000 并非不可能）
+    let (left, top) = (i64::from(x), i64::from(y));
+    let (right, bottom) = (left + i64::from(width), top + i64::from(height));
+
+    monitors.iter().any(|monitor| {
+        let (m_left, m_top) = (i64::from(monitor.x), i64::from(monitor.y));
+        let (m_right, m_bottom) = (
+            m_left + i64::from(monitor.width),
+            m_top + i64::from(monitor.height),
+        );
+        let overlap_width = right.min(m_right) - left.max(m_left);
+        let overlap_height = bottom.min(m_bottom) - top.max(m_top);
+        overlap_width >= MIN_VISIBLE_WIDTH && overlap_height >= MIN_VISIBLE_HEIGHT
+    })
+}
+
+/// 最近一次**非最大化**的窗口几何。
+///
+/// 存在的唯一理由：最大化状态下 `inner_size`/`outer_position` 报的是全屏那一套，
+/// 直接存下来的后果是「最大化时关闭 → 下次取消最大化，窗口还是全屏大小」，
+/// 用户再也回不到自己调的尺寸。所以移动/缩放时持续记录还原态，关闭时按需取用。
+static NORMAL_GEOMETRY: OnceLock<Mutex<settings::WindowGeometry>> = OnceLock::new();
+
+fn normal_geometry_cell() -> &'static Mutex<settings::WindowGeometry> {
+    NORMAL_GEOMETRY.get_or_init(|| Mutex::new(settings::WindowGeometry::default()))
+}
+
+/// 读快照。锁中毒不该让「关窗时保存几何」直接哑掉，取回内部值继续用。
+fn normal_geometry() -> settings::WindowGeometry {
+    *normal_geometry_cell()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn set_normal_geometry(geometry: settings::WindowGeometry) {
+    *normal_geometry_cell()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = geometry;
+}
+
+/// 读当前窗口矩形（物理像素）。
+///
+/// `outer_position` + `inner_size` 的组合在本产品里是**同一个矩形**：
+/// `tauri.conf.json` 里 `decorations: false`（自绘标题栏），窗口没有系统边框，
+/// outer 与 inner 等大。若哪天改回系统边框，这里必须换成 outer_size，
+/// 否则每次「关闭 → 还原」窗口都会缩掉一圈边框的高度，越开越小。
+fn current_geometry<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Option<settings::WindowGeometry> {
+    let position = window.outer_position().ok()?;
+    let size = window.inner_size().ok()?;
+    if size.width == 0 || size.height == 0 {
+        return None;
+    }
+    Some(settings::WindowGeometry {
+        x: Some(position.x),
+        y: Some(position.y),
+        width: size.width,
+        height: size.height,
+        maximized: false,
+    })
+}
+
+/// 移动/缩放后刷新「还原态」快照；最大化与最小化期间的几何一律不采信。
+fn remember_normal_geometry<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    if window.is_maximized().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
+        return;
+    }
+    if let Some(geometry) = current_geometry(window) {
+        set_normal_geometry(geometry);
+    }
+}
+
+/// 启动时按 `settings.window` 还原主窗口，位置不可见则回落主屏居中。
+fn restore_window_geometry(app: &App) {
+    use tauri::{Manager, PhysicalPosition, PhysicalSize};
+
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        tracing::warn!(label = MAIN_WINDOW_LABEL, "找不到主窗口，几何未恢复");
+        return;
+    };
+    let geometry = settings::load_settings_sync().window;
+
+    // 坐标为 None = 尚无记录（首启）或记录已被判废。此时**什么都不要动**：
+    // tauri.conf.json 的 center + 1200×800 就是设计初始态，
+    // 而 WindowGeometry 的默认尺寸是物理像素，在 150% DPI 屏上套用会让首启窗口缩水。
+    let (Some(x), Some(y)) = (geometry.x, geometry.y) else {
+        tracing::info!(
+            maximized = geometry.maximized,
+            "无窗口几何记录，沿用配置初始尺寸"
+        );
+        remember_normal_geometry(&window);
+        if geometry.maximized {
+            let _ = window.maximize();
+        }
+        return;
+    };
+
+    let monitors: Vec<MonitorRect> = window
+        .available_monitors()
+        .map(|list| list.iter().map(MonitorRect::from_monitor).collect())
+        .unwrap_or_default();
+
+    if let Err(err) = window.set_size(PhysicalSize::new(geometry.width, geometry.height)) {
+        tracing::warn!(%err, "恢复窗口尺寸失败");
+    }
+
+    if geometry_is_visible(&monitors, x, y, geometry.width, geometry.height) {
+        if let Err(err) = window.set_position(PhysicalPosition::new(x, y)) {
+            tracing::warn!(%err, "恢复窗口位置失败");
+        }
+    } else {
+        tracing::info!(
+            x,
+            y,
+            monitors = monitors.len(),
+            "记录的窗口位置不在任何显示器可视区内（副屏被拔？），回落主屏居中"
+        );
+        if let Err(err) = window.center() {
+            tracing::warn!(%err, "窗口居中失败");
+        }
+    }
+
+    // 快照必须在 maximize 之前取：之后取到的就是全屏那一套了
+    remember_normal_geometry(&window);
+
+    if geometry.maximized {
+        if let Err(err) = window.maximize() {
+            tracing::warn!(%err, "恢复最大化状态失败");
+        }
+    }
+
+    tracing::info!(
+        width = geometry.width,
+        height = geometry.height,
+        maximized = geometry.maximized,
+        "窗口几何已恢复"
+    );
+}
+
+/// 关窗时把几何写回 `settings.json`（最大化时写**还原后**的那一套）。
+fn persist_window_geometry<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    let maximized = window.is_maximized().unwrap_or(false);
+    let mut geometry = if maximized {
+        normal_geometry()
+    } else {
+        current_geometry(window).unwrap_or_else(normal_geometry)
+    };
+    geometry.maximized = maximized;
+
+    // 必须先读盘再改一个字段：前端随时可能刚写过 settings.json（主题/字号/缩放），
+    // 拿内存里的旧副本整份覆盖等于把用户刚改的偏好抹掉。
+    let mut settings = settings::load_settings_sync();
+    if settings.window == geometry {
+        return;
+    }
+    settings.window = geometry;
+
+    match settings::save_settings_sync(&settings) {
+        Ok(()) => tracing::info!(
+            width = geometry.width,
+            height = geometry.height,
+            maximized,
+            "窗口几何已保存"
+        ),
+        Err(err) => tracing::warn!(%err, "窗口几何保存失败"),
+    }
+}
+
+/// 挂窗口事件：移动/缩放刷新还原态快照，关闭请求落盘。
+fn track_window_geometry(app: &App) {
+    use tauri::Manager;
+
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return;
+    };
+    // 闭包里捕获 AppHandle 而不是 WebviewWindow：窗口持有事件回调，回调再持有窗口
+    // 就是一个强引用环，窗口关闭后整棵 WebView 都释放不掉。
+    let handle = app.handle().clone();
+
+    window.on_window_event(move |event| match event {
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+            if let Some(window) = handle.get_webview_window(MAIN_WINDOW_LABEL) {
+                remember_normal_geometry(&window);
+            }
+        }
+        // 这里不调用 api.prevent_close()：保存是同步小文件写，直接放行关闭。
+        WindowEvent::CloseRequested { .. } => {
+            if let Some(window) = handle.get_webview_window(MAIN_WINDOW_LABEL) {
+                persist_window_geometry(&window);
+            }
+        }
+        _ => {}
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +576,77 @@ mod tests {
         assert!(origin_allowed("http://tauri.localhost/index.html"));
         assert!(origin_allowed("https://tauri.localhost/"));
         assert!(origin_allowed("tauri://localhost"));
+    }
+
+    /// 主屏 1920×1080（任务栏占掉底部 40px）+ 右侧副屏 1920×1080。
+    fn dual_monitors() -> Vec<MonitorRect> {
+        vec![
+            MonitorRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1040,
+            },
+            MonitorRect {
+                x: 1920,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+        ]
+    }
+
+    /// 常规位置（主屏 / 副屏 / 贴边只露一角）一律原样还原，不许自作主张挪窗。
+    #[test]
+    fn keeps_geometry_that_lands_on_a_monitor() {
+        let monitors = dual_monitors();
+        assert!(geometry_is_visible(&monitors, 100, 100, 1200, 800));
+        assert!(geometry_is_visible(&monitors, 2000, 40, 1200, 800));
+        // 贴着右下角只露出一小块，但够抓住 → 不打扰用户
+        assert!(geometry_is_visible(&monitors, 3700, 960, 1200, 800));
+    }
+
+    /// 副屏被拔掉后，记录在副屏上的坐标必须判废（否则窗口还原到屏幕外）。
+    #[test]
+    fn rejects_geometry_outside_every_monitor() {
+        let single = vec![MonitorRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        }];
+        assert!(!geometry_is_visible(&single, 2600, 200, 1200, 800));
+        assert!(!geometry_is_visible(&single, -1500, 200, 1200, 800));
+        // 只露出 60px 宽的一条：低于最小可见宽度，抓不住
+        assert!(!geometry_is_visible(&single, 1860, 200, 1200, 800));
+        // 顶端只剩 20px 高：同样判废
+        assert!(!geometry_is_visible(&single, 200, -780, 1200, 800));
+    }
+
+    /// 枚举不到显示器时按记录还原，不要平白把窗口拽到中央。
+    #[test]
+    fn accepts_any_geometry_when_monitors_unknown() {
+        assert!(geometry_is_visible(&[], 9999, 9999, 1200, 800));
+    }
+
+    /// 脏配置里的极端坐标不许把 i32 加溢出（debug 构建下溢出即 panic = 启动崩溃）。
+    #[test]
+    fn survives_absurd_coordinates() {
+        let monitors = dual_monitors();
+        assert!(!geometry_is_visible(
+            &monitors,
+            i32::MAX,
+            i32::MAX,
+            u32::MAX,
+            u32::MAX
+        ));
+        assert!(geometry_is_visible(
+            &monitors,
+            i32::MIN,
+            i32::MIN,
+            u32::MAX,
+            u32::MAX
+        ));
     }
 
     /// 外链、本地文件、脚本伪协议、乃至 asset 协议地址，出现在**导航**上下文里

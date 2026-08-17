@@ -222,6 +222,33 @@ export async function openDefaultAppsSettings(): Promise<void> {
   return invoke<void>("open_default_apps_settings");
 }
 
+/* ── 应用信息（「关于」对话框，UPGRADE_PLAN 附录 A 关于组） ──── */
+
+/**
+ * 应用自述信息（对应 Rust `settings::app_info()`）。
+ *
+ * 类型刻意留在本文件而不是 `types/index.ts`：它只服务「关于」对话框这一个消费者，
+ * 且与 Rust 命令的返回体一一对应，放在 command 封装旁边最不容易漂移。
+ */
+export interface AppInfo {
+  /** 与 tauri.conf.json 的 version 同源 */
+  version: string;
+  /** 便携模式（exe 同级存在 portable.marker）= true；安装模式 = false（F19） */
+  portable: boolean;
+  /** 数据根目录：便携版 `<exe目录>\data\`，安装版 `%APPDATA%\MDNaonao\` */
+  dataDir: string;
+  /**
+   * 日志目录。Rust 侧不回传时，前端按 `dataDir\logs` 兜底
+   * （与 src-tauri/src/logging.rs 的 `app_data_dir()/logs` 同一约定）。
+   */
+  logDir?: string;
+}
+
+/** → Rust: settings::app_info() */
+export async function appInfo(): Promise<AppInfo> {
+  return invoke<AppInfo>("app_info");
+}
+
 /* ── 设置（M1：settings.rs，DG 7.3） ────────────────────────── */
 
 /** → Rust: settings::load_settings() */
