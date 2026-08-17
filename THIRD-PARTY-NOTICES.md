@@ -2,7 +2,7 @@
 
 本文件依据 [DEV_GUIDE.md 11.6](DEV_GUIDE.md)（许可证与合规）与 [AI_DEV_GUIDE.md 红线 15](AI_DEV_GUIDE.md) 建立。
 
-本项目（MD Viewer for Windows）自身以 **MIT License** 发布，见 [LICENSE](LICENSE)。本项目分发的二进制中包含或链接了下列第三方组件，其版权归各自作者所有，按各自许可证条款授权。
+本项目（MDNaonao for Windows）自身以 **MIT License** 发布，见 [LICENSE](LICENSE)。本项目分发的二进制中包含或链接了下列第三方组件，其版权归各自作者所有，按各自许可证条款授权。
 
 > **维护义务**
 > 1. **新增任何运行时依赖（npm 包 / crate）必须同步登记到本文件**；未登记 = 任务未完成（AI_DEV_GUIDE 第 6 节 DoD）。新增运行时依赖本身需人类批准（红线 12）。
@@ -96,7 +96,7 @@
 
 - 分享功能**不直接使用微信 / 飞书 / 钉钉的官方 Logo**，采用"文字 + 通用抽象图标（气泡 / 纸飞机 / 闪电）"并列的规避方案（DEV_GUIDE 5.8）。
 - 发布前按各平台品牌规范逐条核验（DEV_GUIDE 11.6）。
-- 应用名 "MD Viewer"（中文名候选"墨读"）发布前需做商标冲突检索（DEV_GUIDE 10-10）。
+- 应用名 "MDNaonao"（中文名候选"墨读"）发布前需做商标冲突检索（DEV_GUIDE 10-10）。
 
 ---
 

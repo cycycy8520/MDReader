@@ -31,7 +31,7 @@ https://example.invalid/api/v3/documents/render/preview?documentId=8f14e45fceea1
 
 ### 1.4 超长文件路径（Windows 与 UNC 形态）
 
-行内代码形态：`C:\Users\某个很长的中文用户名\Documents\项目资料\2026 年度\Markdown 文档归档\第三季度\技术方案\MD Viewer\开发指南与验收清单\附件\这是一个非常非常长的文件名用于验证行内代码块在窄容器下的换行策略是否正确.md`
+行内代码形态：`C:\Users\某个很长的中文用户名\Documents\项目资料\2026 年度\Markdown 文档归档\第三季度\技术方案\MDNaonao\开发指南与验收清单\附件\这是一个非常非常长的文件名用于验证行内代码块在窄容器下的换行策略是否正确.md`
 
 UNC 形态（仅手工回归覆盖，不入库）：`\\file-server-01.corp.example.invalid\shared-documents$\部门共享\研发中心\前端组\Markdown 归档\2026\08\17\会议纪要-关于渲染管线分段策略的讨论记录-最终版-v3-确认稿.md`
 
@@ -56,7 +56,7 @@ const EXPORT_PIPELINE_CONFIGURATION_MATRIX = { singleFileHtml: { inlineImagesAsB
 ### 2.2 Rust：单行约 900 字符
 
 ```rust
-pub const REGISTRY_KEYS_WRITTEN_AT_INSTALL_TIME: &[&str] = &["HKEY_CURRENT_USER\\Software\\Classes\\MDViewer.Document\\shell\\open\\command", "HKEY_CURRENT_USER\\Software\\Classes\\MDViewer.Document\\shell\\ExportHtml\\command", "HKEY_CURRENT_USER\\Software\\Classes\\MDViewer.Document\\shell\\ExportPdf\\command", "HKEY_CURRENT_USER\\Software\\Classes\\MDViewer.Document\\shell\\ImportToObsidian\\command", "HKEY_CURRENT_USER\\Software\\Classes\\MDViewer.Document\\shell\\ShareAsLongImage\\command", "HKEY_CURRENT_USER\\Software\\Classes\\MDViewer.Document\\DefaultIcon", "HKEY_CURRENT_USER\\Software\\Classes\\Applications\\mdviewer.exe\\SupportedTypes"];
+pub const REGISTRY_KEYS_WRITTEN_AT_INSTALL_TIME: &[&str] = &["HKEY_CURRENT_USER\\Software\\Classes\\MDNaonao.Document\\shell\\open\\command", "HKEY_CURRENT_USER\\Software\\Classes\\MDNaonao.Document\\shell\\ExportHtml\\command", "HKEY_CURRENT_USER\\Software\\Classes\\MDNaonao.Document\\shell\\ExportPdf\\command", "HKEY_CURRENT_USER\\Software\\Classes\\MDNaonao.Document\\shell\\ImportToObsidian\\command", "HKEY_CURRENT_USER\\Software\\Classes\\MDNaonao.Document\\shell\\ShareAsLongImage\\command", "HKEY_CURRENT_USER\\Software\\Classes\\MDNaonao.Document\\DefaultIcon", "HKEY_CURRENT_USER\\Software\\Classes\\Applications\\mdnaonao.exe\\SupportedTypes"];
 ```
 
 ### 2.3 Bash：单行约 1000 字符
@@ -107,7 +107,7 @@ pnpm exec node ./scripts/gen-corpus.mjs --source ./test-corpus/full-gfm.md --tar
 
 ### 4.1 无序列表：10 级
 
-- 第 1 级：MD Viewer
+- 第 1 级：MDNaonao
   - 第 2 级：前端 src/
     - 第 3 级：components/
       - 第 4 级：阅读区

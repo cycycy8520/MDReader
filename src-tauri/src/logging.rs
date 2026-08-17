@@ -1,7 +1,7 @@
 //! DG 7.1 `logging.rs` 职责：文件日志（轮转），`--action` 无 UI 模式必写。
 //!
 //! 规则来源：
-//! * DG 7.3 存储设计——日志落在 `%APPDATA%\MDViewer\logs\`，按天分文件，
+//! * DG 7.3 存储设计——日志落在 `%APPDATA%\MDNaonao\logs\`，按天分文件，
 //!   保留 7 天或总量 10MB（先到为准）自动轮转。
 //! * DG 10-8——GUI 应用无法向控制台回写，`--action` 每一步都必须留日志，
 //!   否则右键菜单失败时无从排查。
@@ -20,7 +20,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 use crate::error::{AppError, AppResult};
 
 /// 日志文件名前缀，`tracing_appender::rolling::daily` 会追加 `.YYYY-MM-DD`。
-pub const LOG_FILE_PREFIX: &str = "md-viewer.log";
+pub const LOG_FILE_PREFIX: &str = "mdnaonao.log";
 
 /// 保留天数（DG 7.3）。
 pub const LOG_RETAIN_DAYS: u64 = 7;
@@ -28,12 +28,12 @@ pub const LOG_RETAIN_DAYS: u64 = 7;
 /// 日志目录总量上限（DG 7.3）。
 pub const LOG_TOTAL_LIMIT_BYTES: u64 = 10 * 1024 * 1024;
 
-/// 覆盖日志级别的环境变量，例：`MD_VIEWER_LOG=debug`。
-pub const LOG_ENV: &str = "MD_VIEWER_LOG";
+/// 覆盖日志级别的环境变量，例：`MDNAONAO_LOG=debug`。
+pub const LOG_ENV: &str = "MDNAONAO_LOG";
 
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
-/// 日志目录：`%APPDATA%\MDViewer\logs\`。
+/// 日志目录：`%APPDATA%\MDNaonao\logs\`。
 pub fn log_dir() -> AppResult<PathBuf> {
     Ok(crate::settings::app_data_dir()?.join("logs"))
 }
@@ -48,7 +48,7 @@ pub fn init() -> AppResult<WorkerGuard> {
 
     // 先清理再开写，避免刚创建的当天文件被误判
     if let Err(err) = prune(&dir) {
-        eprintln!("[md-viewer] 清理历史日志失败（不影响启动）：{err}");
+        eprintln!("[mdnaonao] 清理历史日志失败（不影响启动）：{err}");
     }
 
     let appender = tracing_appender::rolling::daily(&dir, LOG_FILE_PREFIX);
@@ -125,5 +125,5 @@ pub fn trace_action_step(action: &str, detail: &str) {
 
 /// 兜底：`%APPDATA%` 不可用时至少让错误可见（不静默吞掉）。
 pub fn fallback_report(err: &AppError) {
-    eprintln!("[md-viewer] 日志系统不可用：{err}");
+    eprintln!("[mdnaonao] 日志系统不可用：{err}");
 }

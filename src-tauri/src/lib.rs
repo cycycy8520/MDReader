@@ -1,4 +1,4 @@
-//! MD Viewer 后端库入口：模块声明与启动流程。
+//! MDNaonao 后端库入口：模块声明与启动流程。
 //!
 //! 模块划分严格对应 DG 7.1，一个模块一份职责，不要跨模块塞逻辑：
 //!
@@ -44,7 +44,7 @@ use tauri::App;
 pub fn run(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
-        "MD Viewer 启动（严格只读模式）"
+        "MDNaonao 启动（严格只读模式）"
     );
 
     // 命令行解析失败不阻塞启动：内部已降级为「无参数启动」

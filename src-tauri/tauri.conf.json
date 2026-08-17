@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MD Viewer",
+  "productName": "MDNaonao",
   "version": "0.1.0",
-  "identifier": "com.mdviewer.app",
+  "identifier": "com.mdnaonao.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "MD Viewer",
+        "title": "MDNaonao",
         "width": 1200,
         "height": 800,
         "minWidth": 800,
@@ -41,7 +41,7 @@
   },
   "plugins": {
     "cli": {
-      "description": "MD Viewer 命令行接口（右键动词与无 UI 动作共用）",
+      "description": "MDNaonao 命令行接口（右键动词与无 UI 动作共用）",
       "args": [
         {
           "name": "action",
@@ -67,11 +67,11 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "publisher": "MD Viewer",
+    "publisher": "MDNaonao",
     "category": "Productivity",
     "shortDescription": "Windows 轻量 Markdown 查看器",
-    "longDescription": "MD Viewer —— 双击即开的 Windows 轻量 Markdown 查看器，严格只读。",
-    "copyright": "Copyright (c) 2026 MD Viewer Contributors",
+    "longDescription": "MDNaonao —— 双击即开的 Windows 轻量 Markdown 查看器，严格只读。",
+    "copyright": "Copyright (c) 2026 MDNaonao Contributors",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

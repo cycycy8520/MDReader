@@ -63,9 +63,9 @@ impl fmt::Display for Action {
 /// 命令行契约。新增参数必须同步 `tauri.conf.json` 的 `plugins.cli.args`。
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "md-viewer",
+    name = "mdnaonao",
     version,
-    about = "MD Viewer —— Windows 轻量 Markdown 查看器（严格只读）"
+    about = "MDNaonao —— Windows 轻量 Markdown 查看器（严格只读）"
 )]
 pub struct Cli {
     /// 无 UI 动作
@@ -163,7 +163,7 @@ mod tests {
     /// 默认动作为 open，位置参数落到 file。
     #[test]
     fn parses_bare_file_path() {
-        let argv = vec!["md-viewer.exe".to_string(), "D:\\doc\\a.md".to_string()];
+        let argv = vec!["mdnaonao.exe".to_string(), "D:\\doc\\a.md".to_string()];
         let cli = parse(&argv).expect("应解析成功");
         assert_eq!(cli.action, Action::Open);
         assert_eq!(cli.file, Some(PathBuf::from("D:\\doc\\a.md")));
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn parses_action_flag() {
         let argv = vec![
-            "md-viewer.exe".to_string(),
+            "mdnaonao.exe".to_string(),
             "--action".to_string(),
             "to-html".to_string(),
             "a.md".to_string(),

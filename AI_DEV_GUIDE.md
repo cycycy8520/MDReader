@@ -89,7 +89,7 @@
 ## 4. 仓库结构（首个编码任务 = 按此建仓）
 
 ```
-mdviewer/
+mdnaonao/
 ├── CLAUDE.md                  # AI 会话自动加载的薄入口（见根目录模板）
 ├── DEV_GUIDE.md               # 唯一事实来源（从 E:\MDyuedu\ 移入仓库）
 ├── AI_DEV_GUIDE.md            # 本文档

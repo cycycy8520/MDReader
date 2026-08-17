@@ -108,7 +108,7 @@ pub async fn read_markdown(path: String) -> AppResult<DocumentPayload> {
 
 /// 读取最近列表。
 ///
-/// TODO(M1)：读 `%APPDATA%\MDViewer\recent.json`；文件缺失返回空数组；
+/// TODO(M1)：读 `%APPDATA%\MDNaonao\recent.json`；文件缺失返回空数组；
 /// 损坏时备份后重建（不阻塞启动）。
 #[tauri::command]
 pub async fn list_recent() -> AppResult<Vec<RecentEntry>> {

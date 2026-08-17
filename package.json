@@ -1,9 +1,9 @@
 {
-  "name": "md-viewer",
+  "name": "mdnaonao",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "MD Viewer for Windows —— 轻量 Markdown 查看器（严格只读）",
+  "description": "MDNaonao for Windows —— 轻量 Markdown 查看器（严格只读）",
   "license": "MIT",
   "engines": {
     "node": ">=20",

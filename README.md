@@ -1,4 +1,4 @@
-# MD Viewer for Windows
+# MDNaonao for Windows
 
 > 打开即看、导出即用、分享即达的 Windows Markdown 阅读器。
 
@@ -67,7 +67,7 @@ Windows 10/11 桌面应用，注册为 `.md` 系列文件的打开程序。**严
 | 渲染内核 | Vditor ≥ 3.11.3 的 `dist/method.min.js`（`Vditor.preview()` + `Vditor.outlineRender()`），**资源本地自托管，禁止 CDN** |
 | 前端 | React 18 + TypeScript（`strict`，禁 `any`）+ Zustand + Tailwind CSS + DOMPurify |
 | Rust 侧 | winreg / notify / windows + webview2-com（PrintToPdf COM 桥接）/ reqwest / serde / clap / thiserror / tracing |
-| 存储 | JSON 于 `%APPDATA%\MDViewer\`；飞书密钥经 DPAPI 加密 |
+| 存储 | JSON 于 `%APPDATA%\MDNaonao\`；飞书密钥经 DPAPI 加密 |
 | 安全 | XSS 三层防御：Lute `markdown.sanitize` + DOMPurify + 严格 CSP（一层都不能少） |
 
 版本基线：Rust stable（edition 2021+）、Node 20+、pnpm。M0 结束时把全部依赖冻结为精确版本号并回填 DEV_GUIDE 4.2。

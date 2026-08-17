@@ -1,4 +1,4 @@
-# MD Viewer for Windows —— 开发指导文档
+# MDNaonao for Windows —— 开发指导文档
 
 > 文档版本：v0.3（2026-08-17 修订）
 > 状态：✅ 需求与方案已确认（经外部核验修订）/ ⏳ 开发未启动（整体进度 0%）
@@ -152,7 +152,7 @@ Windows 上缺少一个"又轻又快、开箱即用、与国内办公生态（�
 | PDF 生成（兜底 A） | **headless_chrome 或 chromiumoxide 经 CDP 驱动系统 msedge.exe 调 `Page.printToPDF`** | 规避 Edge headless CLI 回归（见下） | — |
 | PDF 生成（兜底 B，最后手段） | `msedge --headless --print-to-pdf`（加 `--no-pdf-header-footer`） | **已知脆弱**：Edge 141（2025-10）起存在"无报错不出文件"回归（Chromium #381548416），workaround `--headless=old` 已自 Chromium 132 移除 | — |
 | 长图截图 | WebView2 自带 CDP 通道（CallDevToolsProtocolMethod）调 `Page.captureScreenshot`，**必须设 `captureBeyondViewport: true`**——默认与 CapturePreview 一样只截可视区，截不出长图；超长页面受 GPU 纹理上限（约 16384px）限制，超限强制分段截图拼接 | 与预览渲染同源，规避 html-to-image 的 foreignObject 字体丢失，少一个前端依赖 | 隐藏窗口调成内容全高后截图 / 分段拼接；html-to-image（前端备选）。**CapturePreview 仅截可视区，不用于长图** |
-| 存储 | 最近列表/配置均 JSON，`%APPDATA%\MDViewer\`；飞书密钥 DPAPI 加密 | 数据量小免数据库；V2 全文检索再上 SQLite FTS5 | SQLite |
+| 存储 | 最近列表/配置均 JSON，`%APPDATA%\MDNaonao\`；飞书密钥 DPAPI 加密 | 数据量小免数据库；V2 全文检索再上 SQLite FTS5 | SQLite |
 | 打包/安装 | tauri-bundler → NSIS；`webviewInstallMode: downloadBootstrapper`（默认，体积 +0，缺 WebView2 时联网补装约 2MB）；installerHooks 清理自写注册表键 | 25MB 预算下唯一可行模式 | embedBootstrapper(+1.8MB)；offlineInstaller(+127MB，弃) |
 | 飞书 SDK | 自封装 REST（reqwest）：`medias/upload_all` + `import_tasks` 两个接口而已 | 接口少，自封装比拉 SDK 轻 | oapi-sdk-rust |
 
@@ -179,7 +179,7 @@ Windows 上缺少一个"又轻又快、开箱即用、与国内办公生态（�
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  [☰] MD Viewer  文件名.md             [查找][大纲][导出▾][分享▾][•••] │ ← 顶栏 40px（自绘，整条为拖动区）
+│  [☰] MDNaonao  文件名.md             [查找][大纲][导出▾][分享▾][•••] │ ← 顶栏 40px（自绘，整条为拖动区）
 ├───────────┬─────────────────────────────────────┬───────────────┤
 │ [过滤…]   │                                     │ ▸ 大纲(钉住态) │
 │ 置顶      │        阅读区（内容列宽 748px 居中）  │   H1 xxx      │
@@ -404,7 +404,7 @@ Windows 上缺少一个"又轻又快、开箱即用、与国内办公生态（�
 ### 5.8 图标与品牌
 - 图标集：Lucide（MIT，线性描边）。**尺寸只允许 16 / 14 / 12 三档**（16=顶栏与列表主图标，14=行内次要图标，12=角标/箭头），**`stroke-width` 一律 1.5**，**`color` 一律 `currentColor`**（禁止给 SVG 写死颜色，否则主题切换必漏）。v0.2 的"统一 16/20px"作废——20px 在 40px 顶栏与 32px 行里都显得笨重。
 - **图标永远比同行文字淡一档**：文字 `text-primary` 时图标用 `text-tertiary`，hover 才升到 `text-secondary` / `text-primary`。这条比任何单独的颜色值都更影响"精致度"，逐个组件验收（见 6.4）。
-- Logo：圆角方形底 + `M↓` 符号，用 `--md-brand`（近黑/近白，深浅两版各出一份），**不再用 #4C8DF6 蓝**；应用名暂定 "MD Viewer"（中文名候选"墨读"）。
+- Logo：圆角方形底 + `M↓` 符号，用 `--md-brand`（近黑/近白，深浅两版各出一份），**不再用 #4C8DF6 蓝**；应用名暂定 "MDNaonao"（中文名候选"墨读"）。
 - 分享按钮用"文字+通用图标"并列（气泡/纸飞机/闪电的抽象形），**不直接使用微信/飞书/钉钉官方 Logo**，规避商标风险；发布前按 11.6 合规清单核验。
 
 ---
@@ -570,7 +570,7 @@ Windows 上缺少一个"又轻又快、开箱即用、与国内办公生态（�
 6. **分享飞书（API 通道）**：`medias/upload_all`（parent_type=ccm_import_open，≤20MB）→ `POST import_tasks`（point.mount_key 传空=云空间根目录）→ 轮询 `GET import_tasks/:ticket` → 打开云文档链接；任一步失败 → 降级默认通道（复制富文本）。
 
 ### 7.3 存储设计
-- 目录：`%APPDATA%\MDViewer\`（`recent.json`、`settings.json`、`lark-token.json`、`logs\`）。
+- 目录：`%APPDATA%\MDNaonao\`（`recent.json`、`settings.json`、`lark-token.json`、`logs\`）。
 - `recent.json`：数组上限 200，字段 `{path, title, openedAt, pinned, scrollAnchor}`，LRU 淘汰；写入防抖 500ms。
 - `settings.json`：主题、字号、缩放、导出偏好、代码折行、元数据显示、大纲钉住态、窗口几何；飞书 app_id/secret 用 Windows DPAPI 加密存储。
 - `logs\`：按天分文件，保留 7 天或总量 10MB（先到为准）自动轮转。
@@ -599,7 +599,7 @@ Windows 上缺少一个"又轻又快、开箱即用、与国内办公生态（�
 | 附件路径重写 | 导出单文件 HTML：相对/绝对引用 → base64 内联；导出"HTML+资源目录"：拷入 `xxx_files/` 并重写；导入 Obsidian：拷入 vault 并重写。三条路径共用同一个解析器，中文/空格路径进语料库 |
 | 大文件 | >5MB 直接打开+提示条+分段渲染（首屏块优先，滚动懒渲染）；大文件下关闭实时滚动高亮，改为节流 500ms；查找触发时后台补全渲染 |
 | 编码 | UTF-8 优先；BOM 去除；失败按 GBK 解码兜底（中文用户刚需）；状态栏显示实际编码 |
-| 安装/卸载生命周期 | 安装：bundler 关联 + hooks 写额外动词；卸载：bundler 自动恢复关联备份 + PREUNINSTALL 删除全部自写键 + 询问是否删除 `%APPDATA%\MDViewer\`（说明含飞书密钥与最近列表）；验收含"安装→使用→卸载→重装"循环用例 |
+| 安装/卸载生命周期 | 安装：bundler 关联 + hooks 写额外动词；卸载：bundler 自动恢复关联备份 + PREUNINSTALL 删除全部自写键 + 询问是否删除 `%APPDATA%\MDNaonao\`（说明含飞书密钥与最近列表）；验收含"安装→使用→卸载→重装"循环用例 |
 
 ---
 
@@ -621,7 +621,7 @@ Windows 上缺少一个"又轻又快、开箱即用、与国内办公生态（�
 |---|---|---|
 | 需求与方案文档 | ✅ v0.2（2026-08-17） | 即本文档，v0.1 全量核验后修订 |
 | M0-0 建仓与脚手架（含 CI 骨架） | ✅ 已完成 2026-08-17 | 仓库 github.com/cycycy8520/MDReader；工具链 Rust 1.97.1 + pnpm 11.22.0；自测全绿（tsc / eslint / vite build / cargo check / clippy -D warnings / cargo test 14 passed / check-no-cdn）；`tauri build` 出 NSIS 安装包 **2.03MB**（预算 25MB）。**遗留**：正式 Logo 待品牌任务（当前为占位图标）；CI 尚未在 GitHub Actions 上实跑 |
-| M0-① PDF 主路线+兜底 | ⬜ 未开始 | 最高风险，M0-0 后最先做 |
+| M0-① PDF 主路线+兜底 | 🔄 进行中（2026-08-17 起） | 最高风险；版本已锁 webview2-com 0.38.2 / windows 0.61.3；本机 Edge 151（落在事实库 #3 的 CLI 回归区间，故兜底走 CDP） |
 | M0-② Vditor 实测包 | ⬜ 未开始 | 含本地图片方案定案 |
 | M0-③ 剪贴板保真实测 | ⬜ 未开始 | 公众号编辑器 + 飞书文档 |
 | M0-④ 集成冒烟 | ⬜ 未开始 | 官方插件，半天 |

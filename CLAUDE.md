@@ -1,4 +1,4 @@
-# MD Viewer for Windows
+# MDNaonao for Windows
 
 Windows 轻量 Markdown 查看器（Tauri 2 + React + Vditor），严格只读，差异化 = Obsidian 一键导入 + 微信长图/飞书分享。当前阶段：M0 技术验证（进度见 DEV_GUIDE.md 9.2）。
 

@@ -1,16 +1,16 @@
 [package]
-name = "md-viewer"
+name = "mdnaonao"
 version = "0.1.0"
-description = "MD Viewer —— Windows 轻量 Markdown 查看器（严格只读）"
-authors = ["MD Viewer Contributors"]
+description = "MDNaonao —— Windows 轻量 Markdown 查看器（严格只读）"
+authors = ["MDNaonao Contributors"]
 edition = "2021"
 rust-version = "1.77"
-default-run = "md-viewer"
+default-run = "mdnaonao"
 
 # 二进制入口为 src/main.rs（Builder 链所在处）；业务模块统一放在 lib 中，
 # 便于单元测试与未来复用。Windows 专用项目，crate-type 只需 rlib。
 [lib]
-name = "md_viewer_lib"
+name = "mdnaonao_lib"
 crate-type = ["rlib"]
 
 [build-dependencies]

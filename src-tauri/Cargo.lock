@@ -2385,7 +2385,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "md-viewer"
+name = "mdnaonao"
 version = "0.1.0"
 dependencies = [
  "clap",

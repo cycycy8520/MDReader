@@ -1,5 +1,5 @@
 ; ============================================================================
-; MD Viewer —— NSIS 安装器钩子（DG 8「文件关联与右键」「安装/卸载生命周期」）
+; MDNaonao —— NSIS 安装器钩子（DG 8「文件关联与右键」「安装/卸载生命周期」）
 ;
 ; 分工（红线 11：不自研已被官方覆盖的轮子）：
 ;   * 文件关联（.md/.markdown/.mdown/.mkd/.mkdn）由 tauri.conf.json 的
@@ -28,7 +28,7 @@
 ; TODO(M2)：`tauri build` 后打开 target/release/nsis/*/installer.nsi，
 ; 核对 bundler 为 fileAssociations 生成的 ProgID 实际名称并回填此处，
 ; 确保额外动词挂在同一个 ProgID 之下（挂错 ProgID = 右键菜单不出现）。
-!define MDV_PROGID "MDViewer.md"
+!define MDV_PROGID "MDNaonao.md"
 
 ; 动词注册的根位置。installMode = currentUser，因此写 HKCU\Software\Classes。
 ; TODO(M2)：若将来改为 perMachine / both，需按 $MultiUser.InstallMode 分支切到 HKLM。
@@ -56,9 +56,9 @@
 ;   share-image     "生成长图"          v1.1(M3)
 ;
 ; 参考写法（确认 ProgID 后启用）：
-;   WriteRegStr HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDViewer.ToHtml" "" "转为 HTML"
-;   WriteRegStr HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDViewer.ToHtml" "Icon" "$INSTDIR\${MAINBINARYNAME}.exe,0"
-;   WriteRegStr HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDViewer.ToHtml\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" --action to-html "%1"'
+;   WriteRegStr HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDNaonao.ToHtml" "" "转为 HTML"
+;   WriteRegStr HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDNaonao.ToHtml" "Icon" "$INSTDIR\${MAINBINARYNAME}.exe,0"
+;   WriteRegStr HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDNaonao.ToHtml\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" --action to-html "%1"'
 ; ----------------------------------------------------------------------------
 !macro NSIS_HOOK_POSTINSTALL
   ; TODO(M2)：在此写入上述额外动词键。
@@ -74,10 +74,10 @@
 ; ----------------------------------------------------------------------------
 !macro NSIS_HOOK_PREUNINSTALL
   ; TODO(M2)：与 POSTINSTALL 一一对应地删除，例如：
-  ;   DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDViewer.ToHtml"
-  ;   DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDViewer.ToPdf"
-  ;   DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDViewer.ImportObsidian"
-  ;   DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDViewer.ShareImage"
+  ;   DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDNaonao.ToHtml"
+  ;   DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDNaonao.ToPdf"
+  ;   DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDNaonao.ImportObsidian"
+  ;   DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDNaonao.ShareImage"
   !insertmacro MDVRefreshShell
 !macroend
 
@@ -85,8 +85,8 @@
 ; 卸载后：询问是否删除用户数据目录
 ;
 ; TODO(M2)：按 DG 8「安装/卸载生命周期」增加询问——
-;   MessageBox 说明 %APPDATA%\MDViewer\ 内含最近列表、设置与**飞书密钥**，
-;   用户确认后 RMDir /r "$APPDATA\MDViewer"；默认不删。
+;   MessageBox 说明 %APPDATA%\MDNaonao\ 内含最近列表、设置与**飞书密钥**，
+;   用户确认后 RMDir /r "$APPDATA\MDNaonao"；默认不删。
 ; 静默卸载（/S）时一律不删用户数据。
 ; ----------------------------------------------------------------------------
 !macro NSIS_HOOK_POSTUNINSTALL

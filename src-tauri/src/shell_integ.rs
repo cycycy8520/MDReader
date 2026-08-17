@@ -23,7 +23,7 @@ use crate::error::{AppError, AppResult};
 /// 自家 ProgID。
 /// TODO(M2)：`tauri build` 后核对 bundler 为 fileAssociations 生成的实际 ProgID
 /// 名称并与 `nsis-hooks.nsh` 的 `MDV_PROGID` 保持一致（挂错 = 右键菜单不出现）。
-pub const PROGID: &str = "MDViewer.md";
+pub const PROGID: &str = "MDNaonao.md";
 
 /// 动词注册根（installMode=currentUser → HKCU）。
 pub const CLASSES_ROOT: &str = r"Software\Classes";
@@ -51,10 +51,10 @@ impl ShellVerb {
     /// 注册表子键名（挂在 `HKCU\Software\Classes\<PROGID>\shell\` 下）。
     pub fn key_name(&self) -> &'static str {
         match self {
-            ShellVerb::ToHtml => "MDViewer.ToHtml",
-            ShellVerb::ToPdf => "MDViewer.ToPdf",
-            ShellVerb::ImportObsidian => "MDViewer.ImportObsidian",
-            ShellVerb::ShareImage => "MDViewer.ShareImage",
+            ShellVerb::ToHtml => "MDNaonao.ToHtml",
+            ShellVerb::ToPdf => "MDNaonao.ToPdf",
+            ShellVerb::ImportObsidian => "MDNaonao.ImportObsidian",
+            ShellVerb::ShareImage => "MDNaonao.ShareImage",
         }
     }
 

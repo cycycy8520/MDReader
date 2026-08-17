@@ -1,13 +1,13 @@
 //! DG 7.1 `settings.rs` 职责：配置读写；飞书密钥 DPAPI 加密。
 //!
-//! 存储位置（DG 7.3）：`%APPDATA%\MDViewer\`
+//! 存储位置（DG 7.3）：`%APPDATA%\MDNaonao\`
 //! * `settings.json` —— 主题、字号、缩放、导出偏好、代码折行、元数据显示、
 //!   大纲钉住态、窗口几何；
 //! * `lark-token.json` —— 飞书 app_id / app_secret / token 缓存，
 //!   **必须 Windows DPAPI 加密后落盘**，不得明文。
 //!
 //! 注意：这里刻意不使用 Tauri 的 `app_data_dir()`——它返回
-//! `%APPDATA%\com.mdviewer.app`，与 DG 7.3 规定的 `%APPDATA%\MDViewer` 不一致；
+//! `%APPDATA%\com.mdnaonao.app`，与 DG 7.3 规定的 `%APPDATA%\MDNaonao` 不一致；
 //! 且 [`crate::logging::init`] 在 Tauri App 建立之前就要用到本目录。
 
 use std::path::PathBuf;
@@ -16,11 +16,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
 
-/// 用户数据根目录：`%APPDATA%\MDViewer\`。
+/// 用户数据根目录：`%APPDATA%\MDNaonao\`。
 pub fn app_data_dir() -> AppResult<PathBuf> {
     let base = std::env::var_os("APPDATA")
         .ok_or_else(|| AppError::config("未取到 %APPDATA% 环境变量"))?;
-    Ok(PathBuf::from(base).join("MDViewer"))
+    Ok(PathBuf::from(base).join("MDNaonao"))
 }
 
 /// `settings.json` 完整路径。

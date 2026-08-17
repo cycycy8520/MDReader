@@ -1,4 +1,4 @@
-# MD Viewer for Windows —— CI 骨架
+# MDNaonao for Windows —— CI 骨架
 #
 # 依据：DEV_GUIDE 11.3（CI）；AI_DEV_GUIDE 第 7 节 任务卡 M0-0（"CI 骨架 = DG 11.3 的子集"）
 # M0 子集范围（本文件当前实现）：
@@ -187,7 +187,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mdviewer-nsis
+          name: mdnaonao-nsis
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: warn

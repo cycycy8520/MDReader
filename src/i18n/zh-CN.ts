@@ -7,7 +7,7 @@
 
 export const zhCN = {
   app: {
-    name: "MD Viewer",
+    name: "MDNaonao",
     /** 中文名候选（DG 5.8），暂不在界面使用 */
     nameZh: "墨读",
     /** Hero 应用图标里的标记字形（非文案，集中于此避免组件内联字符） */
