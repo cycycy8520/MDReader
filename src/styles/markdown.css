@@ -286,10 +286,23 @@
 }
 .md-content .md-table-wrap > table {
   display: table;
+  /* max-content 让表格按内容自然展开，**但必须被 100% 封顶**：
+     没有这个上限（曾写成 max-width:none）单元格就永远不换行，
+     一句 50 字的说明能把表撑到几千 px —— 阅读性直接归零。
+     有了上限：宽度够就自然展开，不够就在单元格内换行；
+     只有列数多到换行也塞不下时，才由包裹层横向滚动。这正是 GitHub / MPE 的行为。 */
   width: max-content;
-  max-width: none;
+  max-width: 100%;
   overflow: visible;
   margin-bottom: 0;
+}
+
+/* 单元格：允许长句换行，并给一个上限避免某一列独吞整个表宽 */
+.md-content .md-table-wrap th,
+.md-content .md-table-wrap td {
+  overflow-wrap: anywhere;
+  word-break: normal;
+  max-width: 32em;
 }
 
 /* 外链图片占位（红线 4：默认不发起网络请求）——业务专属 UI，基底不可能有。
