@@ -50,5 +50,86 @@ pub fn run(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     // 命令行解析失败不阻塞启动：内部已降级为「无参数启动」
     cmdline::handle_first_instance(app.handle())?;
 
+    // M0-① PoC 验证入口（仅在设置环境变量时触发，正常启动不受影响）
+    if let Ok(poc) = std::env::var(PDF_POC_ENV) {
+        spawn_pdf_poc(app.handle().clone(), poc);
+    }
+
     Ok(())
+}
+
+/// M0-① 验证开关：设为 `<html路径>|<pdf输出路径>` 即在启动后自动跑一次静默导出。
+/// 这是**临时验证脚手架**，M2 打印模板落地后删除。
+pub const PDF_POC_ENV: &str = "MDNAONAO_PDF_POC";
+
+/// 打开测试页 → 等待渲染 → 调 PrintToPdf → 打印结果并退出进程。
+///
+/// 说明：此处用固定等待而非 PRINT_READY 事件，因为测试页是独立 HTML、
+/// 没有打包 Tauri 的 JS API，emit 不到宿主。M2 的打印模板由我们自己的前端渲染，
+/// 届时改为等 [`crate::export::PRINT_READY_EVENT`]（DG 7.2-4）。
+fn spawn_pdf_poc(app: tauri::AppHandle, spec: String) {
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+    tauri::async_runtime::spawn(async move {
+        let (html, out) = match spec.split_once('|') {
+            Some((h, o)) => (h.to_string(), std::path::PathBuf::from(o)),
+            None => {
+                tracing::error!("PDF PoC 参数格式应为 <html>|<pdf>");
+                app.exit(2);
+                return;
+            }
+        };
+
+        let url = match url::Url::from_file_path(&html) {
+            Ok(u) => u,
+            Err(()) => {
+                tracing::error!(%html, "测试页路径无法转为 file:// URL（需绝对路径）");
+                app.exit(2);
+                return;
+            }
+        };
+
+        tracing::info!(%url, "PDF PoC：创建打印窗口");
+        let build = WebviewWindowBuilder::new(&app, "pdfpoc", WebviewUrl::External(url))
+            .title("PDF PoC")
+            .inner_size(900.0, 1200.0)
+            .visible(false)
+            .build();
+        if let Err(err) = build {
+            tracing::error!(%err, "PDF PoC：创建窗口失败");
+            app.exit(2);
+            return;
+        }
+
+        // 等待 Mermaid/KaTeX/字体渲染完成（测试页自身约 1–2s，留足余量）
+        let wait_secs: u64 = std::env::var("MDNAONAO_PDF_POC_WAIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(6);
+        tracing::info!(wait_secs, "PDF PoC：等待页面渲染");
+        tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+
+        let options = export::PdfOptions {
+            output: out.clone(),
+            include_toc: false,
+        };
+        let started = std::time::Instant::now();
+        match export::print_pdf_for_window(&app, "pdfpoc", &options).await {
+            Ok(()) => {
+                let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+                tracing::info!(
+                    path = %out.display(),
+                    bytes = size,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "PDF PoC：导出成功"
+                );
+                let _ = app.get_webview_window("pdfpoc").map(|w| w.close());
+                app.exit(0);
+            }
+            Err(err) => {
+                tracing::error!(%err, "PDF PoC：导出失败");
+                app.exit(1);
+            }
+        }
+    });
 }

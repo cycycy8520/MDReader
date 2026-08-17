@@ -2399,9 +2399,14 @@ dependencies = [
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-single-instance",
  "thiserror 2.0.20",
+ "tokio",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "url",
+ "webview2-com",
+ "windows",
+ "windows-core 0.61.2",
  "winreg 0.52.0",
 ]
 

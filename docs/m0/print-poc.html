@@ -206,11 +206,13 @@ figcaption{
   background:#fff;
   min-height:40px;
 }
-/* mermaid 会在 <svg> 上写 inline max-width:<px>；这里用 !important 覆盖，
-   保证超宽图在 A4 内等比缩放而不是被裁。是否生效是 M0-① 的验收点之一。 */
+/* mermaid 会在 <svg> 上写 width="100%" 属性 + inline style="max-width:<px>"。
+   width:auto 让它回到 viewBox 的固有尺寸（避免小图被拉伸放大），
+   max-width:100% 让超宽图等比缩到纸面内。是否生效是 M0-① 的验收点之一。 */
 .mermaid svg{
-  max-width:100% !important;
+  width:auto !important;
   height:auto !important;
+  max-width:100% !important;
   display:block;
   margin:0 auto;
 }
@@ -362,8 +364,14 @@ html[data-print-ready="error"] #ready-badge{
     print-color-adjust:exact;
   }
 
-  /* Mermaid 图在打印时保证等比缩放不裁边 */
-  .mermaid svg{max-width:100% !important;height:auto !important}
+  /* Mermaid 图在打印时等比缩放不裁边；max-height 兜住"比一页还高"的图，
+     否则 figure 上的 break-inside:avoid 无法生效、图会被页边界切断。 */
+  .mermaid svg{
+    width:auto !important;
+    height:auto !important;
+    max-width:100% !important;
+    max-height:235mm !important;
+  }
 }
 </style>
 </head>
@@ -436,6 +444,17 @@ html[data-print-ready="error"] #ready-badge{
 <code>windows 0.61.3</code>。数字与单位混排：首屏 ≤ 1s、10 MB 语料、内存 ≤ 300 MB、
 滚动 ≥ 50 FPS、PDF 页边距 15–18 mm、缩放 100 %。注意 <code>≤</code>、<code>≥</code>、<code>–</code>（en dash）、
 <code>—</code>（em dash）、<code>×</code>、<code>±</code>、<code>°</code>、<code>§</code> 这些符号是否都有字形。</p>
+
+<p><strong>字体回落标本。</strong>下面这一行故意混入三类会触发<strong>字体回落</strong>的字符，
+它们不在 Microsoft YaHei 的常用子集里，Chromium 会各自换一个字体去画，
+因此也各自需要被单独嵌进 PDF：带圈数字 ①②③④⑤（回落到 Segoe UI Symbol / Segoe Fluent Icons）、
+表情符号 🔄 🖨 📄（回落到 Segoe UI Emoji，注意它在 PDF 里是<strong>彩色还是单色</strong>）、
+以及数学与制表符号 ≈ ≤ ≥ ∑ ∫ √ ± × ÷ ‰ ※ ◎ ★ ☆。
+<strong>本机基线</strong>：这一页最终嵌入了 18 个字体子集，除 MicrosoftYaHei（含 Bold）、
+CascadiaMono（Roman / Bold / Italic / SemiBold）、KaTeX 五个字族之外，
+还回落出了 NSimSun ×2、Noto-Sans-SC、Noto-Serif-SC、SegoeUIEmoji、SegoeFluentIcons。
+<strong>验收口径</strong>：只要每个被用到的字体都带 <code>/FontFile2</code>（即真被嵌入），就算通过；
+若某个字体只有 <code>/BaseFont</code> 而无 <code>/FontFile2</code>，换机器打开就会掉字，判不达标。</p>
 
 <p>再来一段偏长的说明性文字，用于观察行距、段间距与两端对齐（本页<strong>不</strong>启用
 <code>text-align: justify</code>，因为 Chromium 的中文两端对齐在打印时容易产生过大的字间空隙，
@@ -721,35 +740,43 @@ EDGE = <span class="tok-str">r"C:\Program Files (x86)\Microsoft\Edge\Application
 <h2 id="s4" class="page-break-before">四、Mermaid 图（矢量清晰度验收）</h2>
 
 <p>下面两张图使用本地 <code>assets/mermaid/mermaid.min.js</code>（<strong>11.16.1</strong>）渲染，配置了
-<code>startOnLoad: false</code> + <code>flowchart.htmlLabels: false</code>。
-后者很关键：<code>htmlLabels: true</code> 会把标签放进 <code>&lt;foreignObject&gt;</code>，
-而 <code>foreignObject</code> 在打印管线里经常被栅格化或错位；关掉它之后标签是纯 SVG <code>&lt;text&gt;</code>，
-在 PDF 中应当是可选中、可无限放大的矢量文字。<strong>验收动作</strong>：在 PDF 阅读器里放大到 400 %，
-若边缘出现马赛克即为栅格化；再试着用鼠标框选图中的中文标签，能选中即为矢量文字。</p>
+<code>startOnLoad: false</code> + <strong>全局</strong> <code>htmlLabels: false</code>。</p>
+
+<blockquote>
+<p><strong>版本坑（已实测确认，务必写进 M1 的渲染配置）</strong>：Mermaid 11 里
+<code>flowchart.htmlLabels</code> <strong>已废弃且单独设置无效</strong>。其内部的
+<code>getEffectiveHtmlLabels()</code> 取值顺序是
+<code>config.htmlLabels ?? config.flowchart?.htmlLabels ?? true</code>，
+而<strong>全局 <code>htmlLabels</code> 的默认值就是 <code>true</code></strong>，
+于是 <code>?? </code> 永远短路在第一项——只写 <code>flowchart:{htmlLabels:false}</code> 完全不起作用
+（本页第一版就踩了这个坑，实测 SVG 里仍有 16 个 <code>&lt;foreignObject&gt;</code>）。
+必须把 <code>htmlLabels: false</code> 写在配置<strong>顶层</strong>。</p>
+</blockquote>
+
+<p>为什么要关掉：<code>htmlLabels: true</code> 会把节点标签塞进 <code>&lt;foreignObject&gt;</code>，
+而 <code>foreignObject</code> 在打印管线里会被当作独立的 HTML 子树重新布局，容易错位或被栅格化；
+关掉后标签是纯 SVG <code>&lt;text&gt;</code>，在 PDF 中应当是可选中、可无限放大的矢量文字。
+<strong>验收动作</strong>：在 PDF 阅读器里放大到 400 %，若边缘出现马赛克即为栅格化；
+再用鼠标框选图中的中文标签，能选中即为矢量文字。</p>
 
 <figure>
 <pre class="mermaid" id="mmd-flow">
 flowchart TD
   A["用户双击 .md 文件"] --> B{"已有实例在运行？"}
-  B -->|"是"| C["single-instance 路由&lt;br/&gt;把路径发给已有窗口"]
-  B -->|"否"| D["启动主进程&lt;br/&gt;创建 WebView2"]
-  C --> E["读取文件并探测编码"]
+  B -->|"是"| C["single-instance 路由到已有窗口"]
+  B -->|"否"| D["新建主进程与 WebView2"]
+  C --> E["读取文件、探测编码、只读渲染"]
   D --> E
-  E --> F["Vditor.preview() 渲染"]
-  F --> G{"用户选择导出 PDF？"}
-  G -->|"否"| H["只读浏览"]
-  G -->|"是"| I["创建隐藏 WebView2&lt;br/&gt;加载打印用 HTML"]
-  I --> J["轮询 window.__PRINT_READY__"]
-  J --> K{"30 秒内就绪？"}
-  K -->|"是"| L["PrintToPdf 主路线"]
-  K -->|"否"| M["兜底 A：CDP 驱动 msedge.exe"]
-  L --> N{"isSuccessful？"}
-  N -->|"是"| O["写出 A4 PDF&lt;br/&gt;记录页数与耗时"]
-  N -->|"否"| M
-  M --> O
-  O --> P["销毁隐藏 WebView 与用户数据目录"]
+  E --> F["触发导出：隐藏 WebView 加载打印页"]
+  F --> G{"__PRINT_READY__ 30 秒内就绪？"}
+  G -->|"是"| H["主路线 PrintToPdf"]
+  G -->|"否"| I["兜底 A：CDP 驱动 msedge.exe"]
+  H --> J{"isSuccessful？"}
+  J -->|"否"| I
+  J -->|"是"| K["写出 A4 PDF 并销毁隐藏 WebView"]
+  I --> K
 </pre>
-<figcaption>图 1　PDF 导出主路线与兜底 A 的决策流（flowchart TD，htmlLabels 关闭）</figcaption>
+<figcaption>图 1　PDF 导出主路线与兜底 A 的决策流（flowchart TD，全局 htmlLabels 关闭）</figcaption>
 </figure>
 
 <figure>
@@ -757,31 +784,40 @@ flowchart TD
 sequenceDiagram
   autonumber
   participant U as 用户
-  participant APP as MD Viewer 主进程
+  participant APP as 主进程
   participant WV as 隐藏 WebView2
-  participant PG as 打印页 print-poc.html
+  participant PG as 打印页
   participant FS as 文件系统
 
   U->>APP: 触发「导出 PDF」
-  APP->>WV: CreateCoreWebView2Controller（不可见窗口）
-  APP->>WV: Navigate(file:///…/print-poc.html)
-  WV->>PG: 加载 HTML / CSS / 本地 JS
+  APP->>WV: 创建不可见 Controller
+  APP->>WV: Navigate(print-poc.html)
+  WV->>PG: 加载本地 HTML/CSS/JS
   PG->>PG: KaTeX 渲染公式
   PG->>PG: await mermaid.run()
-  PG->>PG: await document.fonts.ready
-  PG-->>WV: __PRINT_READY__ = true + postMessage
+  PG->>PG: await fonts.ready
+  PG-->>WV: __PRINT_READY__ = true
   loop 每 100ms，上限 30s
-    APP->>WV: ExecuteScript("window.__PRINT_READY__")
-    WV-->>APP: "true" / "false"
+    APP->>WV: ExecuteScript 轮询
+    WV-->>APP: true / false
   end
-  APP->>WV: PrintToPdf(路径, A4 设置)
+  APP->>WV: PrintToPdf(A4 设置)
   WV->>FS: 写出 PDF 字节流
   FS-->>APP: isSuccessful = true
-  APP->>WV: Close()（销毁控制器与用户数据目录）
-  APP-->>U: 通知「已导出，共 N 页，耗时 T ms」
+  APP->>WV: Close() 并清理用户数据目录
+  APP-->>U: 已导出 N 页，耗时 T ms
 </pre>
 <figcaption>图 2　静默导出时序（sequenceDiagram，含 30 秒轮询上限与销毁步骤）</figcaption>
 </figure>
+
+<p class="note"><strong>本机基线（Edge 151，A4 可用宽 ≈ 680 px）</strong>：图 1 固有尺寸约
+603 × 1455 px，被 <code>max-height: 235mm</code> 约束后按 <strong>0.61×</strong> 输出（基准字号 19 px → 约 11.6 px）；
+图 2 固有尺寸约 971 × 1030 px，被 <code>max-width: 100%</code> 约束后按 <strong>0.66×</strong> 输出（消息字号 14 px → 约 9.2 px）。
+两图 <code>&lt;foreignObject&gt;</code> 计数均为 <strong>0</strong>、<code>&lt;text&gt;</code> 计数分别为 24 / 42。
+验收时若发现 <code>foreignObject</code> 数量不为 0，说明 <code>htmlLabels</code> 配置回退了，直接判该项不达标。
+自查一行（DevTools 或 CDP <code>Runtime.evaluate</code>）：
+<code>[...document.querySelectorAll('.mermaid svg')].map(s =&gt; s.querySelectorAll('foreignObject').length)</code>
+应当返回 <code>[0, 0]</code>。</p>
 
 <!-- ============================================================ -->
 <h2 id="s5">五、KaTeX 公式（0.16.9，本地字体）</h2>
@@ -908,7 +944,15 @@ sequenceDiagram
   <li>§6 图 3 内联 SVG 文字可选中；图 4 data-URI SVG 清晰；图 5 位图放大后为方块马赛克（说明未被平滑重采样）；</li>
   <li>§7 页内锚点<strong>无</strong> <code>[…]</code> 后缀；<code>file:</code> 链接<strong>有</strong>后缀且超长 URL 能折行；</li>
   <li>§8 段落编号 ¶01–¶14 连续；跨页处无孤行（单独一行落在页首/页尾）；</li>
-  <li>总页数 ≥ 3（预期 6–9 页，随字体版本浮动），记录实际页数与文件字节数；</li>
+  <li>字体全部为子集嵌入：PDF 里 <code>/FontFile2</code> 的数量应与实际用到的 TrueType 字体数一致
+    （本机基线 18 个字体子集，见 §1 的"字体回落标本"）；</li>
+  <li>栅格图只应有 1 张（§6 的 16×16 PNG）：PDF 中 <code>/Subtype /Image</code> 计数 = 1，
+    说明内联 SVG 与 data-URI SVG 都保持了矢量，Mermaid 也没有被栅格化；</li>
+  <li>总页数 ≥ 3。<strong>本机基线</strong>：Edge 151.0.4129.78 + CDP <code>printToPDF</code>
+    （<code>preferCSSPageSize: true</code>，四边 margin 全 0 交给 CSS <code>@page</code>）实测
+    <strong>12 页 / 1 256 861 字节 / MediaBox 594.96×841.92 pt</strong>，就绪耗时约 210 ms、导出耗时约 3.1 s。
+    页数随系统字体版本浮动 ±1 属正常，偏差超过 2 页要查原因（多半是某个 <code>break-inside: avoid</code>
+    的块比一页还高，被整体推页浪费了纸）。记录实际页数与文件字节数；</li>
   <li>记录端到端耗时：从 Navigate 到 <code>isSuccessful</code> 的墙钟时间，以及页面自报的 <code>__PRINT_TIMING__.total</code>；</li>
   <li>主路线 PDF 与兜底 A PDF 逐项对比，把差异写进 <code>docs/m0/m0-1-pdf-poc.md</code> 的"二、数据"表。</li>
 </ol>
@@ -1077,11 +1121,26 @@ sequenceDiagram
         deterministicIDSeed: 'm0-print-poc',
         fontFamily: cjk,
         maxTextSize: 200000,
-        flowchart: { htmlLabels: false, useMaxWidth: true, curve: 'basis' },
+        // 关键（11.x 版本坑）：flowchart.htmlLabels 已废弃，且 getEffectiveHtmlLabels
+        // 读的是 `config.htmlLabels ?? config.flowchart.htmlLabels ?? true`，
+        // 而全局 htmlLabels 默认为 true —— 只写 flowchart.htmlLabels 无效，必须写这个全局项。
+        // 置 false 后节点标签是 SVG <text> 而非 <foreignObject>，打印时才是可选中的矢量文字。
+        htmlLabels: false,
+        // 图在 A4 上必然被等比缩小，所以把基准字号调大，缩放后才落在可读区间（≈11–12px）
+        themeVariables: { fontFamily: cjk, fontSize: '19px' },
+        // 下面这组尺寸参数是为 A4 纵向（可用宽约 180mm ≈ 680px）调过的：
+        // 目标是两张图的"固有尺寸"就落在纸面内，从而完全不触发缩放，文字按原字号输出。
+        flowchart: {
+          useMaxWidth: true, curve: 'linear',
+          nodeSpacing: 30, rankSpacing: 36, padding: 8,
+          wrappingWidth: 320            // 默认 200 会让中文标签折成两三行，把 TD 图顶得很高
+        },
         sequence: {
           useMaxWidth: true,
           actorFontFamily: cjk, noteFontFamily: cjk, messageFontFamily: cjk,
-          actorFontSize: 13, messageFontSize: 12, noteFontSize: 12
+          actorFontSize: 15, messageFontSize: 14, noteFontSize: 13,
+          diagramMarginX: 12, actorMargin: 26, width: 108, height: 52,
+          boxMargin: 8, messageMargin: 26
         }
       });
     } catch (e) {

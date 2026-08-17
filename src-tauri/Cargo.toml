@@ -55,10 +55,19 @@ reqwest = { version = "0.12", features = ["json", "multipart"] }
 # 已于 2026-08-17 用 `cargo tree -i` 核对（tauri 2.11.5 环境）：
 #   wry v0.55.1 → webview2-com v0.38.2、windows v0.61.3
 # 升级 tauri 后必须重新核对这三个版本并同步此处。
-# M0-① 开工时取消下面三行注释即可（features 按实际调用的 COM 接口增补）：
-# [target.'cfg(windows)'.dependencies]
-# webview2-com = "=0.38.2"
-# windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_System_Com"] }
+# M0-① PoC 脚手架用（M2 打印模板落地后，若 lib.rs 的 PoC 入口删除则一并复查）：
+# url —— file:// URL 构造；tokio —— 等待页面渲染的 sleep。二者本就是 tauri 的传递依赖，
+# 此处显式声明只是为了能直接 use（版本跟随 lockfile 已解析的结果）。
+url = "2"
+tokio = { version = "1", features = ["time"] }
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.38.2"
+windows = { version = "=0.61.3", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+] }
+windows-core = "=0.61.2"
 
 [profile.release]
 # 25MB 安装包预算（DG 3.2）：体积优先

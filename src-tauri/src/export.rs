@@ -96,12 +96,152 @@ pub async fn export_html(
 /// 再在 M2 接入真实打印模板。
 #[tauri::command]
 pub async fn export_pdf(app: AppHandle, options: PdfOptions) -> AppResult<ExportResult> {
-    let _ = app;
-    Err(AppError::not_implemented(format!(
-        "export::export_pdf（M0-①/M2）：{}",
-        options.output.display()
-    )))
+    let started = std::time::Instant::now();
+    print_pdf_for_window(&app, PDF_WINDOW_LABEL, &options).await?;
+    Ok(ExportResult {
+        output: options.output.clone(),
+        route: Some(PdfRoute::PrintToPdf),
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
 }
+
+/// 执行打印的窗口标签。M0-① PoC 直接打印主窗口；M2 起改为隐藏的打印专用窗口
+/// （加载打印模板而非阅读区，避免把 UI 外壳也印进去）。
+pub const PDF_WINDOW_LABEL: &str = "main";
+
+/// 主路线：WebView2 `ICoreWebView2_7::PrintToPdf` 静默导出（事实库 #1/#2）。
+///
+/// 调用链：`with_webview` → `controller()` → `CoreWebView2()` → cast `ICoreWebView2_7`
+/// → `environment()` cast `ICoreWebView2Environment6` → `CreatePrintSettings`
+/// → `PrintToPdf(path, settings, handler)` → 完成回调经 channel 桥回。
+///
+/// 三个关键约束：
+/// * `with_webview` 的闭包在**主线程**执行且必须是 `'static + Send`，所以结果只能经 channel 出来；
+/// * `PrintToPdf` 是异步完成回调，回调里拿到的 `BOOL` 才是「是否真的写出了文件」；
+/// * 调用前页面必须已渲染完成（PRINT_READY），否则会印出半张空白。
+#[cfg(windows)]
+pub async fn print_pdf_for_window(
+    app: &AppHandle,
+    window_label: &str,
+    options: &PdfOptions,
+) -> AppResult<()> {
+    use std::sync::mpsc;
+
+    use tauri::Manager;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Environment6, ICoreWebView2_7,
+    };
+    use webview2_com::PrintToPdfCompletedHandler;
+    use windows_core::{Interface, HSTRING, PCWSTR};
+
+    let webview = app
+        .get_webview_window(window_label)
+        .ok_or_else(|| AppError::config(format!("找不到窗口：{window_label}")))?;
+
+    if let Some(parent) = options.output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let output = options.output.clone();
+    let include_toc = options.include_toc;
+
+    // 闭包在主线程跑，结果经 channel 回到 async 上下文
+    let (tx, rx) = mpsc::channel::<Result<bool, String>>();
+
+    webview
+        .with_webview(move |platform| {
+            // 每一步都可能失败，统一收集为 Result 再一次性送回
+            let result = (|| -> Result<(), String> {
+                let core = unsafe { platform.controller().CoreWebView2() }
+                    .map_err(|e| format!("取 CoreWebView2 失败：{e}"))?;
+                let core7: ICoreWebView2_7 = core
+                    .cast()
+                    .map_err(|e| format!("cast ICoreWebView2_7 失败（WebView2 运行时过旧？）：{e}"))?;
+                let env6: ICoreWebView2Environment6 = platform
+                    .environment()
+                    .cast()
+                    .map_err(|e| format!("cast ICoreWebView2Environment6 失败：{e}"))?;
+
+                let settings = unsafe { env6.CreatePrintSettings() }
+                    .map_err(|e| format!("CreatePrintSettings 失败：{e}"))?;
+                unsafe {
+                    // A4 = 8.27 × 11.69 英寸；单位就是英寸（COM 接口以 double 英寸计）
+                    let _ = settings.SetPageWidth(A4_WIDTH_IN);
+                    let _ = settings.SetPageHeight(A4_HEIGHT_IN);
+                    let _ = settings.SetMarginTop(PDF_MARGIN_IN);
+                    let _ = settings.SetMarginBottom(PDF_MARGIN_IN);
+                    let _ = settings.SetMarginLeft(PDF_MARGIN_IN);
+                    let _ = settings.SetMarginRight(PDF_MARGIN_IN);
+                    // 去掉浏览器默认的页眉页脚（日期/URL/页码），否则版面不像正式文档
+                    let _ = settings.SetShouldPrintHeaderAndFooter(false);
+                    // 打印背景图形：代码块底色、表格斑马纹依赖它
+                    let _ = settings.SetShouldPrintBackgrounds(true);
+                }
+                let _ = include_toc; // 文内目录页由前端模板生成（FR-08），此处无对应 COM 选项
+
+                let path = HSTRING::from(output.as_os_str());
+                let tx_done = tx.clone();
+                // 注意闭包签名：completed_callback 宏已把原始 COM 类型转过一道
+                // （HRESULT → windows::core::Result<()>，BOOL → bool），不是裸类型。
+                let handler = PrintToPdfCompletedHandler::create(Box::new(
+                    move |hr: windows_core::Result<()>, ok: bool| {
+                        let msg = match hr {
+                            Ok(()) => Ok(ok),
+                            Err(e) => Err(format!("PrintToPdf 回调返回错误：{e}")),
+                        };
+                        let _ = tx_done.send(msg);
+                        Ok(())
+                    },
+                ));
+
+                unsafe { core7.PrintToPdf(PCWSTR(path.as_ptr()), &settings, &handler) }
+                    .map_err(|e| format!("PrintToPdf 调用失败：{e}"))?;
+                Ok(())
+            })();
+
+            // 同步阶段就失败的话，回调永远不会来，必须自己把错误送回去
+            if let Err(err) = result {
+                let _ = tx.send(Err(err));
+            }
+        })
+        .map_err(|e| AppError::config(format!("with_webview 失败：{e}")))?;
+
+    // 回调在主线程触发，这里必须在阻塞线程上等，否则会把主线程堵死
+    let timeout = std::time::Duration::from_secs(PDF_TIMEOUT_SECS);
+    let received = tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(timeout))
+        .await
+        .map_err(|e| AppError::config(format!("等待打印结果的任务失败：{e}")))?;
+
+    match received {
+        Ok(Ok(true)) => {
+            tracing::info!(path = %options.output.display(), "PrintToPdf 成功");
+            Ok(())
+        }
+        Ok(Ok(false)) => Err(AppError::config(
+            "PrintToPdf 返回失败（未写出文件）；常见原因：输出路径不可写或页面尚未渲染完成"
+                .to_string(),
+        )),
+        Ok(Err(err)) => Err(AppError::config(err)),
+        Err(_) => Err(AppError::config(format!(
+            "PrintToPdf 超时（{PDF_TIMEOUT_SECS}s）：页面可能未发出 PRINT_READY 或渲染卡住"
+        ))),
+    }
+}
+
+#[cfg(not(windows))]
+pub async fn print_pdf_for_window(
+    _app: &AppHandle,
+    _window_label: &str,
+    _options: &PdfOptions,
+) -> AppResult<()> {
+    Err(AppError::not_implemented(
+        "PrintToPdf 仅 Windows 可用".to_string(),
+    ))
+}
+
+/// A4 纸张尺寸与页边距（英寸），COM 打印设置以英寸计。
+pub const A4_WIDTH_IN: f64 = 8.27;
+pub const A4_HEIGHT_IN: f64 = 11.69;
+pub const PDF_MARGIN_IN: f64 = 0.4;
 
 /// 打印（FR-17 / Ctrl+P）：调起系统打印对话框，使用与 PDF 相同的打印模板。
 ///

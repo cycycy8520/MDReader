@@ -621,7 +621,8 @@ Windows 上缺少一个"又轻又快、开箱即用、与国内办公生态（�
 |---|---|---|
 | 需求与方案文档 | ✅ v0.2（2026-08-17） | 即本文档，v0.1 全量核验后修订 |
 | M0-0 建仓与脚手架（含 CI 骨架） | ✅ 已完成 2026-08-17 | 仓库 github.com/cycycy8520/MDReader；工具链 Rust 1.97.1 + pnpm 11.22.0；自测全绿（tsc / eslint / vite build / cargo check / clippy -D warnings / cargo test 14 passed / check-no-cdn）；`tauri build` 出 NSIS 安装包 **2.03MB**（预算 25MB）。**遗留**：正式 Logo 待品牌任务（当前为占位图标）；CI 尚未在 GitHub Actions 上实跑 |
-| M0-① PDF 主路线+兜底 | 🔄 进行中（2026-08-17 起） | 最高风险；版本已锁 webview2-com 0.38.2 / windows 0.61.3；本机 Edge 151（落在事实库 #3 的 CLI 回归区间，故兜底走 CDP） |
+| M0-① PDF 主路线 | ✅ 已打通（2026-08-17） | PrintToPdf COM 桥接跑通：12 页 A4（594.96×841.92pt）、993KB、耗时 2.87s、MicrosoftYaHei 等 11 个字体子集内嵌、71 个 ToUnicode CMap（可搜索复制）、解出 985 个中文字符无乱码。产物 `docs/m0/out-printtopdf.pdf` |
+| M0-① 兜底 A（CDP 驱动 Edge） | ⬜ 未开始 | 本机 Edge 151 落在事实库 #3 的 CLI 回归区间，必须走 CDP `Page.printToPDF` |
 | M0-② Vditor 实测包 | ⬜ 未开始 | 含本地图片方案定案 |
 | M0-③ 剪贴板保真实测 | ⬜ 未开始 | 公众号编辑器 + 飞书文档 |
 | M0-④ 集成冒烟 | ⬜ 未开始 | 官方插件，半天 |
