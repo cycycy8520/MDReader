@@ -5,7 +5,8 @@ Windows 轻量 Markdown 查看器（Tauri 2 + React + Vditor），严格只读�
 ## 文档体系（先读这个再干活）
 
 1. **[AI_DEV_GUIDE.md](AI_DEV_GUIDE.md)** —— 你的执行手册：启动协议、红线、已核验事实库、任务卡、完成定义。**每次会话按其第 1 节"启动协议"开始。**
-2. **[DEV_GUIDE.md](DEV_GUIDE.md)（v0.2）** —— 需求与方案的唯一事实来源。按任务需要查阅对应章节，冲突时以它为准。
+2. **[DEV_GUIDE.md](DEV_GUIDE.md)** —— 需求与方案的唯一事实来源。按任务需要查阅对应章节，冲突时以它为准。
+3. **[UPGRADE_PLAN.md](UPGRADE_PLAN.md)** —— 当前阶段（M1 阅读体验升级）的执行手册：任务卡、验收纪律、条目级进度。干活先看这里的当前批次；依据是 docs/audit-2026-08-18.md 的 77 项审计。
 
 ## 红线速览（完整 15 条见 AI_DEV_GUIDE.md 第 2 节）
 
