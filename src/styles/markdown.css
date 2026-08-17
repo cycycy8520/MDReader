@@ -1,5 +1,5 @@
 /**
- * Markdown 正文样式 —— 「基底 + 变量桥 + 增量」三层结构（对齐 MPE / GitHub 观感）。
+ * Markdown 正文样式 —— 「基底 + 变量桥 + 字号引擎 + 增量」四层结构（对齐 MPE / GitHub 观感）。
  *
  * 基底：github-markdown-css@5.9.0 的变量版 github-markdown.css（main.tsx 中先于本文件引入）。
  *   它就是 MPE 默认主题的同源样式表，自带完整 GitHub 排版（标题/列表/表格/引用/代码/
@@ -13,8 +13,13 @@
  *   更靠后」稳定压过基底取值，于是深浅两态 100% 跟随应用主题。
  *   **main.tsx 的引入顺序（github 基底在前、本文件在后）是这套机制的前提，调换即翻车。**
  *
+ * 字号引擎（见第二节）：正文字号 = --md-reading-font × --md-zoom，
+ *   **两个变量由 App 层（App.tsx 阅读区容器的 inline style）从 settings 注入**，
+ *   本文件只负责回退值与派生；标题/代码/表格/脚注等全部改成相对该字号的 em 或 calc，
+ *   于是「设置里改字号或缩放 → 整篇等比呼吸、层级比例不崩」。
+ *
  * 作用域：阅读区容器同时挂 .markdown-body（吃基底）与 .md-content（吃增量），
- *   见 App.tsx；不污染应用外壳。
+ *   见 App.tsx；不污染应用外壳（顶栏/状态栏/左栏永远不随缩放变化）。
  */
 
 /* ══════════════════════════════════════════════════════════════
@@ -68,7 +73,90 @@
 }
 
 /* ══════════════════════════════════════════════════════════════
-   二、列宽三态 —— 作用在阅读区外层容器（App.tsx data-reading-width）
+   二、字号与缩放引擎（UPGRADE_PLAN 1.4）—— 阅读区尺寸的唯一源头
+
+   链路（务必按这个方向读，反过来会以为 CSS 认识 settings）：
+     settings.fontSize（14–20）与 settings.zoomPercent（90–150）
+       → App 层（App.tsx 阅读区容器的 inline style）注入
+         --md-reading-font: <fontSize>px 与 --md-zoom: <zoomPercent/100>
+       → 本文件把两者相乘得出 --md-reading-size，正文吃它，
+         标题/代码/表格/脚注等次级字号一律相对它取 em 或 calc。
+   **注入方是 App 层，回退值与派生在这里；本文件不认识 settings，settings 也不认识选择器。**
+
+   回退值为什么写在 :root 而不是 .md-content：自定义属性遵循「元素上的声明恒压过继承值」。
+   若把回退写在 .md-content 上，App 层一旦把 inline style 打在外层容器
+   （[data-reading-width] 或 [data-reading-root]）而不是 .md-content 本身，
+   注入值就会被 .md-content 自己的回退声明遮蔽 —— 现象是「设置改了没反应」，
+   且 DevTools 里两处都显示有值，极难排查。写在 :root 则「注入到 .md-content
+   或它的任意祖先（含 html）」都成立，接线方式随便挑。
+
+   UI 外壳（顶栏/状态栏/左栏/大纲）刻意不消费这两个变量：
+   缩放只作用于正文、chrome 纹丝不动，是 MPE / VS Code 预览的行为，也是 1.4 的验收条件。
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* 回退 = 设置项的默认值（fontSize 16 / zoomPercent 100）。
+     App 层未接线或注入失败时，观感与接线前完全一致，不会退化成浏览器默认。 */
+  --md-reading-font: 16px;
+  --md-zoom: 1;
+  /* 行高一律用无单位比值：它会按各自元素的字号折算，字号放大时行距自动跟上
+     （写成 28px 这类绝对值就是旧实现「字号一变行距不跟、大字挤成一坨」的根因）。
+     1.5 = github-markdown-css 基底原值，保持与 MPE 同源观感；
+     整体调松紧只改这一个数，正文与标题会各自按自己的字号重新折算。 */
+  --md-reading-leading: 1.5;
+}
+
+.md-content {
+  /* 正文实际字号 = 字号设置 × 缩放系数。
+     下面所有 em 字阶都以它为「1em 的起点」，所有需要跟着呼吸的间距都 calc 它。 */
+  --md-reading-size: calc(var(--md-reading-font) * var(--md-zoom));
+}
+
+/* 基底把 .markdown-body 的 font-size 写死成 16px、line-height 写死 1.5，
+   特异性同为 (0,1,0)，源顺序也压不过它（同分时后者胜，但我们要的是稳）。
+   这里用 .markdown-body.md-content (0,2,0) 明确压过——两个类挂在同一个 div 上（App.tsx）。 */
+.markdown-body.md-content {
+  font-size: var(--md-reading-size);
+  line-height: var(--md-reading-leading);
+
+  /* 基底的间距全部走这五个 --base-size-*，原值是 rem（跟 html 根字号 16px，与阅读区字号
+     完全脱钩）：字号调到 20px 时标题上下留白仍是 24px，层次会塌成一片。
+     这里按「原值 ÷ 16px」的比例重绑到 --md-reading-size：
+     默认 16px 时算出的像素值与原值逐个相等（视觉零变化），字号一改则整体等比呼吸。 */
+  --base-size-4: calc(var(--md-reading-size) * 0.25);
+  --base-size-8: calc(var(--md-reading-size) * 0.5);
+  --base-size-16: var(--md-reading-size);
+  --base-size-24: calc(var(--md-reading-size) * 1.5);
+  --base-size-40: calc(var(--md-reading-size) * 2.5);
+}
+
+/* 标题字阶：刻意不在本文件重写。
+   github 基底给的已经是纯 em 比例字阶（h1 2em / h2 1.5em / h3 1.25em / h4 1em /
+   h5 .875em / h6 .85em，行高统一 1.25），父级 font-size 一变就整体等比缩放，
+   正是 1.4 要的效果。重写一遍只会与基底的 h1/h2 下划线、padding-bottom 脱节。
+   —— 若将来要换字阶，改这里的覆盖块，别去改基底文件。 */
+
+/* 基底里为数不多的绝对 px 字号，逐条改成相对值（漏掉它们，字号一放大就会
+   出现「正文很大、这几处纹丝不动」的破绽）。
+   代码块 / 行内代码 / small / sub / sup 基底本就是百分比，天然跟随，无需处理。 */
+.markdown-body.md-content kbd {
+  /* 基底：font: 11px <mono>; line-height: 10px */
+  font-size: 0.6875em; /* 11/16 */
+  line-height: 0.91; /* 原 10px ÷ 11px */
+}
+
+.markdown-body.md-content .footnotes {
+  font-size: 0.75em; /* 基底 12px ÷ 16 */
+}
+
+/* 表格单元格内边距：基底是死的 6px 13px，大字号下会挤得没法读 */
+.markdown-body.md-content table th,
+.markdown-body.md-content table td {
+  padding: calc(var(--md-reading-size) * 0.375) calc(var(--md-reading-size) * 0.8125);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   三、列宽三态 —— 作用在阅读区外层容器（App.tsx data-reading-width）
    fluid = 内容宽度跟随窗口（MPE 行为，当前默认）；
    medium = 748px 适中（沿用旧版列宽）；wide = 1000px。
    切换 UI 属后续设置页，本次只保证 CSS 与容器属性就位。
@@ -101,7 +189,35 @@
 }
 
 /* ══════════════════════════════════════════════════════════════
-   三、增量与必要覆盖 —— 每条注明「为什么 github 基底不覆盖」
+   四、代码折行 codeWrap（UPGRADE_PLAN 1.4）
+
+   链路：settings.codeWrap（boolean）→ App 层在阅读区容器上写
+        data-code-wrap="on" | "off" → 下面两条规则。
+   属性挂在 .md-content 自身或它的任意祖先都生效（两组选择器各覆盖一种接法），
+   省得样式层与 App 层为「挂哪一层」再对一次口径。
+
+   off（默认）= 一条规则都不加：基底的 pre{overflow:auto} + pre>code{white-space:pre}
+   本来就是横向滚动的正确实现，不需要「反向复位」的规则。
+   ══════════════════════════════════════════════════════════════ */
+
+.md-content[data-code-wrap="on"] pre,
+[data-code-wrap="on"] .md-content pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 必须连 pre > code 一起改：基底的 .markdown-body pre>code 写死 white-space: pre，
+   只改 pre 的话内层 code 依旧不折行（是这条最容易漏的坑）。
+   hljs 高亮产物就挂在这个 code 上，一并覆盖到。 */
+.md-content[data-code-wrap="on"] pre > code,
+[data-code-wrap="on"] .md-content pre > code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   五、增量与必要覆盖 —— 每条注明「为什么 github 基底不覆盖」
    ══════════════════════════════════════════════════════════════ */
 
 /* 长串防裁切：基底只有 word-wrap:break-word，无空格长串（长 URL / 哈希）碰上
@@ -131,17 +247,32 @@
   list-style: none;
 }
 .md-content li.vditor-task input[type="checkbox"] {
-  /* 负外边距把复选框拉回项目符号位（与基底 .task-list-item-checkbox 同手法） */
+  /* 负外边距把复选框拉回项目符号位（与基底 .task-list-item-checkbox 同手法）；
+     单位是 em，字号变大时复选框与文字的相对位置不会跑偏 */
   margin: 0 0.4em 0.25em -1.5em;
   vertical-align: middle;
   accent-color: var(--md-accent);
 }
 
 /* 代码块：圆角 12px + 发丝描边对齐参考项目（基底是 6px 无描边——审美覆盖项）；
-   底色 / 字体 / overflow-x:auto 已由基底 + 变量桥接管，不再重复 */
+   底色 / 字体 / overflow-x:auto 已由基底 + 变量桥接管，不再重复。
+   圆角刻意保持绝对值：它是「外壳」的一部分，与顶栏/卡片的 rounded-card 同族，
+   跟着正文字号缩放反而会与周边控件失配 */
 .md-content pre {
   border-radius: 12px;
   border: 1px solid var(--md-border-l1);
+}
+
+/* 代码块工具条（preview.ts 给每个代码块套 div[data-code-block]，内含 pre + 悬浮工具条）
+   一律不可选中：否则拖选代码附近的正文，粘贴出来会混进「python 复制」这类 UI 文字。
+   App / 渲染层也会给工具条加 select-none，这里是兜底的第二道（两处任一失效都不出事）。
+   必须连后代一起写死：index.css 的 [data-reading-root] * { user-select: text }
+   是直接命中后代元素的规则，只靠父级继承压不住它。
+   选择器用「data-code-block 的非 pre 直接子元素」而不是具体类名，
+   是为了不与渲染层的 Tailwind 类名耦合（那边改 class 不会悄悄失效）。 */
+.md-content [data-code-block] > :not(pre),
+.md-content [data-code-block] > :not(pre) * {
+  user-select: none;
 }
 
 /* 表格横向滚动包裹：基底把 table 自身设为滚动容器（display:block + overflow:auto），
@@ -150,7 +281,8 @@
    且 max-width:none 保证超宽表格绝不被裁切、只在包裹层内滚动（用户最高优先诉求） */
 .md-content .md-table-wrap {
   overflow-x: auto;
-  margin-bottom: 16px;
+  /* 与基底给 table 的 margin-bottom: var(--base-size-16) 等值，跟随字号呼吸 */
+  margin-bottom: var(--md-reading-size);
 }
 .md-content .md-table-wrap > table {
   display: table;
@@ -160,29 +292,36 @@
   margin-bottom: 0;
 }
 
-/* 外链图片占位（红线 4：默认不发起网络请求）——业务专属 UI，基底不可能有 */
+/* 外链图片占位（红线 4：默认不发起网络请求）——业务专属 UI，基底不可能有。
+   字号取 em、盒距取 calc(--md-reading-size)，与正文一起缩放；
+   作为 UI 而非正文，同样不可选中（与代码块工具条同理，防止污染复制内容） */
 .md-content .md-remote-image {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 16px 0;
-  padding: 12px 14px;
+  gap: calc(var(--md-reading-size) * 0.5);
+  margin: var(--md-reading-size) 0;
+  padding: calc(var(--md-reading-size) * 0.75) calc(var(--md-reading-size) * 0.875);
   border: 1px dashed var(--md-border-l3);
   border-radius: 8px;
   color: var(--md-text-tertiary);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 0.8125em; /* 13/16 */
+  line-height: 1.54; /* 原 20px ÷ 13px */
+}
+
+.md-content .md-remote-image,
+.md-content .md-remote-image * {
+  user-select: none;
 }
 
 /* frontmatter 属性卡片（FR-14）——业务专属 UI，基底不可能有 */
 .md-content .md-frontmatter {
-  margin: 0 0 24px;
-  padding: 12px 16px;
+  margin: 0 0 calc(var(--md-reading-size) * 1.5);
+  padding: calc(var(--md-reading-size) * 0.75) var(--md-reading-size);
   border: 1px solid var(--md-border-l2);
   border-radius: 12px;
   background: var(--md-bg-panel);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 0.8125em; /* 13/16 */
+  line-height: 1.54; /* 原 20px ÷ 13px */
 }
 
 .md-content .md-frontmatter dt {
@@ -190,7 +329,7 @@
 }
 
 .md-content .md-frontmatter dd {
-  margin: 0 0 6px;
+  margin: 0 0 0.46em; /* 原 6px ÷ 13px */
   color: var(--md-text-secondary);
 }
 
@@ -199,12 +338,12 @@
 .md-content .language-mermaid,
 .md-content .language-mermaid svg {
   display: block;
-  margin: 16px auto;
+  margin: var(--md-reading-size) auto;
   max-width: 100%;
 }
 
 .md-content .katex-display {
-  margin: 16px 0;
+  margin: var(--md-reading-size) 0;
   overflow-x: auto;
   overflow-y: hidden;
   padding: 2px 0;
@@ -219,11 +358,11 @@
 
 .md-content .footnotes-list,
 .md-content .vditor-footnotes {
-  margin-top: 32px;
-  padding-top: 16px;
+  margin-top: calc(var(--md-reading-size) * 2);
+  padding-top: var(--md-reading-size);
   border-top: 1px solid var(--md-border-l2);
-  font-size: 14px;
-  line-height: 24px;
+  font-size: 0.875em; /* 14/16 */
+  line-height: 1.71; /* 原 24px ÷ 14px */
   color: var(--md-text-secondary);
 }
 
@@ -231,7 +370,7 @@
    （八角图标 + 负外边距浮动）是两套 DOM，基底样式作用不到；hover 才显现，不干扰阅读 */
 .md-content .vditor-anchor {
   opacity: 0;
-  margin-left: 6px;
+  margin-left: 0.375em;
   color: var(--md-text-tertiary);
 }
 
@@ -239,8 +378,9 @@
   opacity: 1;
 }
 
+/* 图标尺寸用 em：跟着所在标题的字号走（h1 里的锚点自然大一点） */
 .md-content .vditor-anchor svg {
-  width: 14px;
-  height: 14px;
+  width: 0.875em;
+  height: 0.875em;
   vertical-align: middle;
 }

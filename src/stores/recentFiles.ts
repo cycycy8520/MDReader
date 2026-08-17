@@ -7,6 +7,7 @@ import { create } from "zustand";
 
 import {
   listRecent,
+  probePaths,
   removeRecent,
   setRecentPinned,
   setScrollAnchor,
@@ -56,6 +57,12 @@ interface RecentFilesState {
   missingPaths: string[];
 
   load: () => Promise<void>;
+  /**
+   * 批量探测条目路径是否还在，回填 missingPaths（失效条目灰显，FR-03）。
+   * 调用点：load() 之后自动跑一次；App 侧建议在窗口重新获得焦点时再跑一次
+   * （用户很可能刚在资源管理器里删了文件）。
+   */
+  refreshMissing: () => Promise<void>;
   /** 打开/切换文件后置顶到列表首位（LRU） */
   touch: (file: Pick<RecentFile, "path" | "title">) => void;
   togglePin: (path: string) => void;
@@ -77,7 +84,8 @@ function sortItems(items: RecentFile[]): RecentFile[] {
 
 /**
  * 后端不做「整表写回」，而是细粒度增删改，每个命令回传最新全表（DG 7.3，写入防抖 500ms 在 Rust 侧）。
- * 本地先乐观更新保证手感，命令返回后以后端全表为准；M0 阶段后端未就绪，失败仅告警不回滚。
+ * 本地先乐观更新保证手感，命令返回后以后端全表为准；命令失败仅告警不回滚
+ * （本地状态已经是用户看到的结果，回滚反而是二次跳变）。
  */
 function reconcile(
   promise: Promise<RecentFile[]>,
@@ -104,9 +112,28 @@ export const useRecentFilesStore = create<RecentFilesState>()((set, get) => ({
       const items = await listRecent();
       set({ items: sortItems(items).slice(0, RECENT_LIMIT), loaded: true });
     } catch (error: unknown) {
-      // M0：后端 command 尚未实现，按空列表进入空状态（DG 6.6「无最近文件」）
+      // 后端不可用时按空列表进入空状态（DG 6.6「无最近文件」），不阻塞界面
       console.warn("[recentFiles] load failed", error);
       set({ items: [], loaded: true });
+    }
+    // 探测与加载解耦：失效灰显晚一拍出现无所谓，但绝不能拖慢左栏首屏
+    await get().refreshMissing();
+  },
+
+  refreshMissing: async () => {
+    const paths = get().items.map((item) => item.path);
+    if (paths.length === 0) {
+      if (get().missingPaths.length > 0) {
+        set({ missingPaths: [] });
+      }
+      return;
+    }
+    try {
+      const missing = await probePaths(paths);
+      set({ missingPaths: missing });
+    } catch (error: unknown) {
+      // 探测失败就维持原状：宁可不灰显，也不能把好条目误判成失效
+      console.warn("[recentFiles] refreshMissing failed", error);
     }
   },
 
@@ -143,7 +170,11 @@ export const useRecentFilesStore = create<RecentFilesState>()((set, get) => ({
 
   remove: (path) => {
     // 仅从列表移除，绝不删除磁盘文件（FR-03）
-    set({ items: get().items.filter((item) => item.path !== path) });
+    set({
+      items: get().items.filter((item) => item.path !== path),
+      // 同步清掉失效标记，避免同名文件重新加入时残留灰显
+      missingPaths: get().missingPaths.filter((missing) => missing !== path),
+    });
     reconcile(removeRecent(path), set, "remove");
   },
 

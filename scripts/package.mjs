@@ -81,15 +81,50 @@ if (!fs.existsSync(exePath)) {
   fail(`找不到可执行文件：${exePath}（先跑 pnpm tauri build）`);
 }
 
-// 事实库 #17 的机器闸门：devUrl 混进产物说明构建方式错了，直接拦下
-const exeBuf = fs.readFileSync(exePath);
-if (exeBuf.includes(Buffer.from("localhost:1420", "utf8"))) {
+// ── 事实库 #17 的机器闸门 ──────────────────────────────────────
+// 曾经的做法是搜 exe 里有没有 "localhost:1420" —— **那是错的**：tauri.conf.json 会被
+// generate_context! 整体内嵌，devUrl 字段无论 dev/prod 都在字符串表里，必然误报。
+// 真正要防的两件事换成下面两条可靠检查：
+//   1) 前端产物是否比 exe 新 —— Tauri 在编译期内嵌 dist，只改前端时 cargo 认为无需重编，
+//      exe 里就是旧界面（这个坑实际踩过一次，改了样式却看不到变化）。
+//   2) exe 体积是否够大 —— 生产构建内嵌了压缩后的 dist（含 vendor/vditor 约 9MB 资源），
+//      dev 构建不内嵌，两者体积差一个量级。
+const exeStat = fs.statSync(exePath);
+
+function newestMtime(dir) {
+  let newest = 0;
+  const walk = (d) => {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else newest = Math.max(newest, fs.statSync(full).mtimeMs);
+    }
+  };
+  if (fs.existsSync(dir)) walk(dir);
+  return newest;
+}
+
+const distDir = path.join(ROOT, "dist");
+const distMtime = newestMtime(distDir);
+if (distMtime > exeStat.mtimeMs + 1000) {
   fail(
-    "产物内嵌了 devUrl（localhost:1420），说明它是 cargo build 的产物而非 tauri build。\n" +
-      "         这种 exe 脱离开发服务器会白屏，禁止交付（AI_DEV_GUIDE 事实库 #17）。",
+    "dist/ 比 exe 新：exe 内嵌的是旧前端。\n" +
+      "         只改前端时 cargo 不会重编 —— 先 touch 一个 .rs 文件或 cargo clean -p mdnaonao 再重跑。",
   );
 }
-log(`exe 校验通过（无 devUrl 残留，${humanSize(exeBuf.length)}）`);
+
+// 阈值取自本机实测（2026-08-18，勿凭感觉改）：
+//   cargo build --release（不内嵌 dist）→ 8.55 MB
+//   pnpm tauri build（内嵌压缩后的 dist）→ 11.32 MB
+// 取 10MB 卡在两者之间；前端资源变大时只会更安全。
+const MIN_PROD_EXE_MB = 10;
+if (exeStat.size < MIN_PROD_EXE_MB * 1024 * 1024) {
+  fail(
+    `exe 仅 ${humanSize(exeStat.size)}，小于生产构建应有的体积（≥${MIN_PROD_EXE_MB}MB）。\n` +
+      "         多半是 cargo build 的产物（未内嵌 dist），脱离开发服务器会白屏。",
+  );
+}
+log(`exe 校验通过（${humanSize(exeStat.size)}，内嵌前端不早于 dist）`);
 
 fs.rmSync(OUT_DIR, { recursive: true, force: true });
 fs.mkdirSync(OUT_DIR, { recursive: true });

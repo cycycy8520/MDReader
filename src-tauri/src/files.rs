@@ -44,8 +44,10 @@ pub const SUPPORTED_EXTENSIONS: [&str; 5] = ["md", "markdown", "mdown", "mkd", "
 /// 必须与 `src/services/ipc.ts` 的 `EVENT_FILE_CHANGED` 一致。
 pub const EVENT_FILE_CHANGED: &str = "file-changed";
 
-/// 后端 → 前端：当前文件被删除/移走（payload 为绝对路径字符串）。
-/// 前端 M1 暂未订阅，先把事件发出去，顶栏警示条接上即可用（FR-06）。
+/// 后端 → 前端：当前文件被删除/移走（payload 为绝对路径字符串，**不是对象**）。
+/// 前端 `services/ipc.ts` 的 `EVENT_FILE_REMOVED` / `onFileRemoved` 与之对应，
+/// 顶栏 slide-down 警示条据此弹出；文件回来时会再收到一次
+/// [`EVENT_FILE_CHANGED`]（同样是路径字符串），前端据此撤条（FR-06）。
 pub const EVENT_FILE_REMOVED: &str = "file-removed";
 
 /// UTF-8 BOM 字节序列。
@@ -265,6 +267,28 @@ pub async fn set_scroll_anchor(path: String, anchor: Option<ScrollAnchor>) -> Ap
         tracing::debug!(%path, "滚动锚点目标不在最近列表中，已忽略");
     }
     Ok(())
+}
+
+/// 批量探测路径是否存在，返回其中**不存在**的那部分（UPGRADE_PLAN 1.8「失效路径灰显」）。
+///
+/// 契约：入参是前端最近列表里的原始路径字符串，回传的也是**原样的那些字符串**——
+/// 前端拿到就能直接塞进 `missingPaths` 做集合比对，不必再做一次归一化。
+/// 只回传失效子集而不是全量布尔表：200 条列表里失效通常是个位数。
+///
+/// 探测本身是同步 IO（UNC/离线盘符上单次 `metadata` 可能阻塞数秒），
+/// 因此整批丢到阻塞线程池跑，不占用 async 运行时的工作线程。
+#[tauri::command]
+pub async fn probe_paths(paths: Vec<String>) -> AppResult<Vec<String>> {
+    let total = paths.len();
+    let missing = tauri::async_runtime::spawn_blocking(move || missing_paths(paths))
+        .await
+        .map_err(|err| {
+            tracing::error!(%err, "批量探测路径的任务失败");
+            AppError::native(format!("批量探测路径失败：{err}"))
+        })?;
+
+    tracing::debug!(total, missing = missing.len(), "批量探测路径完成");
+    Ok(missing)
 }
 
 /// 在资源管理器中定位文件（FR-03「打开所在文件夹」）。
@@ -650,6 +674,17 @@ fn now_millis() -> i64 {
 // ---------------------------------------------------------------------------
 // 内部工具
 // ---------------------------------------------------------------------------
+
+/// [`probe_paths`] 的同步内核：过滤出**当前不存在**的路径，保留调用方给的原始写法。
+///
+/// 空串/纯空白直接算失效（`Path::new("").exists()` 本就是 false，这里显式短路，
+/// 省掉一次对当前工作目录的 stat）。
+fn missing_paths(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|path| path.trim().is_empty() || !to_absolute(Path::new(path)).exists())
+        .collect()
+}
 
 /// 相对路径按当前工作目录补全；不做 `canonicalize`——它会返回 `\\?\C:\…`
 /// 这种 UNC 前缀，explorer 与前端展示都不认。
@@ -1038,6 +1073,41 @@ mod tests {
         let mut entries = Vec::new();
         upsert_entry(&mut entries, entry("D:\\a.md", 0, false));
         assert!(entries[0].opened_at > 0);
+    }
+
+    /* ── 批量探测（1.8 失效路径灰显） ─────────────────────────── */
+
+    /// 只回传失效子集，且**原样**回传调用方给的字符串（前端按字符串比对）。
+    #[test]
+    fn missing_paths_returns_only_absent_originals() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdnaonao-probe-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录应成功");
+        let alive = dir.join("在的.md");
+        std::fs::write(&alive, b"# hi").expect("写临时文件应成功");
+        let alive_str = alive.to_string_lossy().into_owned();
+        // 大小写/正斜杠的另一种写法也应被认成同一个存在的文件
+        let alive_alt = alive_str.replace('\\', "/");
+        let gone = dir.join("不在的.md").to_string_lossy().into_owned();
+
+        let missing = missing_paths(vec![
+            alive_str.clone(),
+            gone.clone(),
+            alive_alt,
+            String::new(),
+            "   ".to_string(),
+        ]);
+
+        assert_eq!(missing, vec![gone, String::new(), "   ".to_string()]);
+        assert!(
+            !missing.contains(&alive_str),
+            "存在的文件不该出现在失效列表里"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /* ── 序列化契约 ───────────────────────────────────────────── */

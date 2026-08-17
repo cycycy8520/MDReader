@@ -18,10 +18,18 @@
  *   7. 空状态就是一行 13/20 的 tertiary 文字，不画插画、不做骨架屏
  *   9. 图标只有 16/14/12 三档，stroke-width 1.5，颜色一律 currentColor
  *
- * M1 接线（本次）：
+ * M1 接线：
  *   打开（对话框 / 双击关联 / 拖拽 / 最近列表）→ fileSession.openPath → ipc.readMarkdown
  *   → renderMarkdown 渲染进阅读区 → 回填大纲与统计 → recentFiles 计入最近列表
  *   → ipc.watchFile 监听外部变更（重渲染并保持滚动位置 + 顶栏 ● 闪一次）
+ *
+ * 批次 1「驯服 WebView、接通断线」本文件负责的部分（UPGRADE_PLAN 1.1/1.4/1.6/1.7/1.8）：
+ *   1.1 阅读区 click/auxclick 委托：外链交系统浏览器、相对 .md 应用内打开、#锚点走平滑跳转，
+ *       其余协议一律拦下——WebView 永远不会被导航走；
+ *   1.4 字号/缩放以 CSS 变量注入阅读容器（Ctrl+滚轮 / Ctrl+= / Ctrl+- / Ctrl+0），codeWrap 走 data 属性；
+ *   1.6 未实现按钮一律 disabled（tooltip 说明"开发中"），状态栏缩放与主题两个按钮真正接线；
+ *   1.7 阅读区可聚焦 + 打开后自动聚焦（键盘翻页生效）、Esc 语义链、点击已打开文件不重开；
+ *   1.8 file-removed 警示条、失效条目的出路、拖入不支持类型的 danger 反馈、工具条文字不可选中。
  *
  * 阅读区唯一允许的滚动动画是大纲跳转的 250ms 平滑滚动（军规 1）；
  * 加载态一律是一行淡字 + 10px 微 spinner，**不做骨架屏**（DG 6.6）。
@@ -33,18 +41,21 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
   type RefObject,
 } from "react";
 
 import { t } from "./i18n/zh-CN";
-import { renderMarkdown } from "./render/preview";
+import { renderMarkdown, resolveLocalPath } from "./render/preview";
 import {
   onDragDrop,
   onFileChanged,
+  onFileRemoved,
   onOpenPath,
   takePendingOpen,
   onWindowResized,
+  openExternal,
   openFileDialog,
   windowClose,
   windowIsMaximized,
@@ -58,9 +69,19 @@ import {
   type SessionPhase,
 } from "./stores/fileSession";
 import { useRecentFilesStore } from "./stores/recentFiles";
-import { useSettingsStore } from "./stores/settings";
+import {
+  readingStyleVars,
+  useSettingsStore,
+  ZOOM_PRESETS,
+  ZOOM_STEP,
+} from "./stores/settings";
 import { useUiStateStore } from "./stores/uiState";
-import { ENCODING_LABEL, type OutlineNode, type RecentFile } from "./types";
+import {
+  ENCODING_LABEL,
+  type OutlineNode,
+  type RecentFile,
+  type Theme,
+} from "./types";
 
 /* ── 常量（技术值，不是文案） ─────────────────────────────────── */
 
@@ -78,11 +99,54 @@ const REFRESH_FLASH_MS = 600;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/* ── 警示条 ──────────────────────────────────────────────────── */
+
+/** 提示型警示条（拖入不支持类型等）的自动撤条时长；错误型不自动撤 */
+const NOTICE_AUTO_DISMISS_MS = 4000;
+
+/* ── 链接判定（1.1 点击委托） ───────────────────────────────── */
+
+/** 交系统浏览器的外链 */
+const EXTERNAL_HREF_RE = /^https?:\/\//i;
+/** 盘符绝对路径 / UNC：不再以当前文档目录为基准解析 */
+const ABSOLUTE_PATH_RE = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
+
 /* ── 纯函数工具 ─────────────────────────────────────────────── */
 
 function isSupportedPath(path: string): boolean {
   const lower = path.toLowerCase();
   return SUPPORTED_EXTENSIONS.some((ext) => lower.endsWith(`.${ext}`));
+}
+
+/** 状态栏 zoom% 点击循环：取比当前值大的第一档，越界回到最小档（档位表在 settings store） */
+function nextZoomPreset(current: number): number {
+  return ZOOM_PRESETS.find((step) => step > current) ?? ZOOM_PRESETS[0];
+}
+
+/** URI 解码兜底：中文/空格链接必然是编码过的，畸形序列时原样返回 */
+function decodeSafe(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/** 拆出 href 的路径部分与 fragment（不含 #），查询串一并丢弃 */
+function splitHash(href: string): { readonly path: string; readonly hash: string } {
+  const hashIndex = href.indexOf("#");
+  const withoutHash = hashIndex >= 0 ? href.slice(0, hashIndex) : href;
+  const hash = hashIndex >= 0 ? href.slice(hashIndex + 1) : "";
+  const queryIndex = withoutHash.indexOf("?");
+  return {
+    path: queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash,
+    hash,
+  };
+}
+
+/** Windows 路径包含判定：分隔符与大小写都不敏感（复用 samePath 的口径） */
+function includesPath(list: readonly string[], path: string): boolean {
+  return list.some((item) => samePath(item, path));
 }
 
 /** 取所在目录，作为本地图片相对路径基准；根路径或无分隔符时返回 null */
@@ -218,14 +282,23 @@ function buildRecentGroups(
   return groups;
 }
 
-/** 标题文本 → 锚点 id（仅在渲染层没给 id 时兜底），同名自动加序号 */
-function toHeadingId(text: string, used: Set<string>): string {
-  const base =
+/**
+ * 标题文本 → slug。既用于「渲染层没给 id 时兜底生成」，也用于
+ * 1.1 锚点跳转 id 未命中时的模糊回退（手写 `#中文标题` 与实际 id 常常差一层编码）。
+ */
+function slugOf(text: string): string {
+  return (
     text
       .trim()
       .toLowerCase()
       .replace(/[\s]+/g, "-")
-      .replace(/[^\p{L}\p{N}_-]/gu, "") || "heading";
+      .replace(/[^\p{L}\p{N}_-]/gu, "") || "heading"
+  );
+}
+
+/** 标题文本 → 锚点 id（仅在渲染层没给 id 时兜底），同名自动加序号 */
+function toHeadingId(text: string, used: Set<string>): string {
+  const base = slugOf(text);
   let id = base;
   let index = 2;
   while (used.has(id)) {
@@ -272,6 +345,23 @@ function buildOutlineFromDom(container: HTMLElement): OutlineNode[] {
   }
 
   return roots;
+}
+
+/**
+ * 渲染后处理：把「不属于正文」的浮层文字挡在文本选择之外。
+ *
+ * 代码块工具条（语言标签 + 复制钮）与外链图片占位块都是渲染层注入的 UI，
+ * 拖选正文时会被一起选中，粘贴出来混着「python 复制」（审计 minor）。
+ * 正统做法是渲染层建这些节点时就带 select-none，这里做的是幂等的兜底加固：
+ * `[data-reading-root] *` 在 base 层强制 user-select:text，utilities 层的 select-none 覆盖得掉。
+ */
+function hardenToolbarSelection(container: HTMLElement): void {
+  const toolbars = container.querySelectorAll<HTMLElement>(
+    "[data-code-block] > div, [data-external-image]",
+  );
+  for (const toolbar of Array.from(toolbars)) {
+    toolbar.classList.add("select-none");
+  }
 }
 
 function prefersReducedMotion(): boolean {
@@ -392,17 +482,6 @@ function IconShare(props: IconProps) {
   );
 }
 
-/** 更多（⋯）：三点用实心，线框圆环在 16px 下会糊成一团 */
-function IconMore(props: IconProps) {
-  return (
-    <Glyph {...props}>
-      <circle cx="5.5" cy="12" r="1.25" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="12" r="1.25" fill="currentColor" stroke="none" />
-      <circle cx="18.5" cy="12" r="1.25" fill="currentColor" stroke="none" />
-    </Glyph>
-  );
-}
-
 /** 三角箭头：默认指右（收起），展开时由调用方 rotate-90 指下 */
 function IconChevron(props: IconProps) {
   return (
@@ -462,6 +541,36 @@ function IconMoon(props: IconProps) {
   );
 }
 
+/** 浅色态：短射线的太阳，12px 下不糊 */
+function IconSun(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" />
+    </Glyph>
+  );
+}
+
+/** 跟随系统：显示器轮廓（与浅/深两态形成三态区分） */
+function IconMonitor(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <rect x="3" y="4.5" width="18" height="12" rx="2" />
+      <path d="M9 20.5h6M12 16.5v4" />
+    </Glyph>
+  );
+}
+
+/** 警示条图标：三角感叹号，色由调用方给（danger / warn） */
+function IconAlert(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <path d="M12 4.5 21 19.5H3L12 4.5Z" />
+      <path d="M12 10v4.2M12 17h.01" />
+    </Glyph>
+  );
+}
+
 /* ── 通用小件 ───────────────────────────────────────────────── */
 
 interface IconButtonProps {
@@ -470,29 +579,40 @@ interface IconButtonProps {
   /** 未实现的功能不传，按钮保持无行为（不写 alert 之类占位） */
   readonly onClick?: () => void;
   readonly active?: boolean;
+  /** 功能尚未落地：opacity-40 + cursor-default + tooltip「开发中」，且不触发 onClick */
+  readonly disabled?: boolean;
   readonly className?: string;
 }
 
 /**
  * 幽灵图标钮 28px 圆形：反馈只有背景色，且不加 transition（铁律 1 / 2）。
  * 图标常态 tertiary，hover 升一档到 secondary（铁律 5）。
+ *
+ * 禁用态用 aria-disabled 而非原生 disabled：原生禁用元素在 Chromium 下不接收鼠标事件，
+ * 连 title 提示都弹不出来——而「点了才知道没做」正是这次要消灭的体验（DG 6.4 全局条 B）。
  */
 function IconButton({
   label,
   children,
   onClick,
   active = false,
+  disabled = false,
   className = "",
 }: IconButtonProps) {
   return (
     <button
       type="button"
       aria-label={label}
-      title={label}
-      aria-pressed={onClick ? active : undefined}
-      onClick={onClick}
-      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full hover:bg-hover hover:text-secondary ${
-        active ? "bg-hover text-secondary" : "text-tertiary"
+      title={disabled ? `${label}${t.common.comingSoonSuffix}` : label}
+      aria-disabled={disabled ? true : undefined}
+      aria-pressed={!disabled && onClick ? active : undefined}
+      onClick={disabled ? undefined : onClick}
+      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
+        disabled
+          ? "cursor-default text-tertiary opacity-40"
+          : `hover:bg-hover hover:text-secondary ${
+              active ? "bg-hover text-secondary" : "text-tertiary"
+            }`
       } ${className}`}
     >
       {children}
@@ -637,7 +757,9 @@ function TopBar({
         <IconButton label={t.topbar.open} onClick={onOpenFile}>
           <IconFolderOpen />
         </IconButton>
-        <IconButton label={t.topbar.find}>
+        {/* 查找在批次 3 点亮，导出/分享在 M2；未实现一律 disabled，不写占位 onClick。
+            「更多」菜单在批次 3 的右键菜单一并落地，无内容期间直接不画。 */}
+        <IconButton label={t.topbar.find} disabled>
           <IconSearch />
         </IconButton>
         <IconButton
@@ -647,19 +769,69 @@ function TopBar({
         >
           <IconOutline />
         </IconButton>
-        <IconButton label={t.topbar.export}>
+        <IconButton label={t.topbar.export} disabled>
           <IconExport />
         </IconButton>
-        <IconButton label={t.topbar.share}>
+        <IconButton label={t.topbar.share} disabled>
           <IconShare />
-        </IconButton>
-        <IconButton label={t.topbar.more}>
-          <IconMore />
         </IconButton>
       </nav>
 
       <WindowControls />
     </header>
+  );
+}
+
+/* ── 警示条（DG 6.4-13：顶栏下方 slide-down，非模态、不遮内容） ── */
+
+interface NoticeAction {
+  readonly label: string;
+  readonly run: () => void;
+}
+
+interface Notice {
+  /** danger = 出事了（文件没了）；warn = 操作没生效（拖入不支持类型） */
+  readonly kind: "danger" | "warn";
+  readonly message: string;
+  readonly action: NoticeAction | null;
+  /** 提示型自动撤条；错误型必须由用户处理或由 file-changed 自动撤 */
+  readonly autoDismiss: boolean;
+}
+
+interface NoticeBarProps {
+  readonly notice: Notice;
+  /** 挂载后下一帧翻 true，触发 160ms 的 transform+opacity 展开 */
+  readonly shown: boolean;
+  readonly onDismiss: () => void;
+}
+
+function NoticeBar({ notice, shown, onDismiss }: NoticeBarProps) {
+  const tone = notice.kind === "danger" ? "text-danger" : "text-warn";
+
+  return (
+    <div
+      role="status"
+      className={`flex h-row-group shrink-0 items-center gap-2 border-b border-l2 bg-panel px-3 transition-[opacity,transform] duration-base ease-standard ${
+        shown ? "translate-y-0 opacity-100" : "-translate-y-1 opacity-0"
+      }`}
+    >
+      <IconAlert size={14} className={`shrink-0 ${tone}`} />
+      <span className={`min-w-0 flex-1 truncate text-ui-sm ${tone}`}>
+        {notice.message}
+      </span>
+      {notice.action === null ? null : (
+        <button
+          type="button"
+          onClick={notice.action.run}
+          className="flex h-6 shrink-0 items-center rounded-row px-2 text-ui-sm text-primary hover:bg-hover-danger"
+        >
+          {notice.action.label}
+        </button>
+      )}
+      <IconButton label={t.common.close} onClick={onDismiss}>
+        <IconClose size={12} />
+      </IconButton>
+    </div>
   );
 }
 
@@ -680,6 +852,8 @@ function SidebarSearch({ value, onChange }: SidebarSearchProps) {
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={t.sidebar.searchPlaceholder}
+        // Esc 语义链要区分「焦点在过滤框」与「焦点在别处」，用属性标记而非 id 选择器
+        data-sidebar-filter="true"
         className="min-w-0 flex-1 border-none bg-transparent text-ui text-primary outline-none placeholder:text-caption"
       />
     </div>
@@ -759,7 +933,7 @@ function RecentGroupBlock({
               key={entry.file.path}
               entry={entry}
               selected={samePath(entry.file.path, currentPath)}
-              missing={missingPaths.includes(entry.file.path)}
+              missing={includesPath(missingPaths, entry.file.path)}
               onOpen={onOpen}
             />
           ))}
@@ -922,6 +1096,11 @@ interface ReadingAreaProps {
   readonly path: string | null;
   readonly scrollerRef: RefObject<HTMLElement>;
   readonly contentRef: RefObject<HTMLDivElement>;
+  /** 正文字号档位 14–20px（settings.fontSize） */
+  readonly fontSize: number;
+  /** 缩放百分比 90–150（settings.zoomPercent） */
+  readonly zoomPercent: number;
+  readonly codeWrap: boolean;
   readonly onOpenFile: () => void;
   readonly onRetry: () => void;
 }
@@ -933,15 +1112,32 @@ function ReadingArea({
   path,
   scrollerRef,
   contentRef,
+  fontSize,
+  zoomPercent,
+  codeWrap,
   onOpenFile,
   onRetry,
 }: ReadingAreaProps) {
   const busy = phase === "loading" || phase === "rendering";
 
+  /**
+   * 字号与缩放以 CSS 变量注入，样式层用 calc(var(--md-reading-font) * var(--md-zoom))
+   * 消费（styles/markdown.css）。只作用于阅读容器，顶栏/状态栏不受影响。
+   * 变量的钳位与格式化在 settings store 的 readingStyleVars 里（唯一事实来源）。
+   */
+  const readingVars = useMemo(
+    () => readingStyleVars(fontSize, zoomPercent) as CSSProperties,
+    [fontSize, zoomPercent],
+  );
+  const codeWrapAttr = codeWrap ? "on" : "off";
+
   return (
     <main
       ref={scrollerRef}
       data-reading-root
+      // 键盘翻页（PgDn/PgUp/Space/Home/End）作用于焦点所在的滚动容器：
+      // 没有 tabIndex 就永远拿不到焦点，按键落到 body 上什么也不滚（审计 major）
+      tabIndex={-1}
       className="quiet-bars min-w-0 flex-1 overflow-y-auto bg-canvas"
     >
       {phase === "empty" ? <ReadingHero onOpenFile={onOpenFile} /> : null}
@@ -962,6 +1158,8 @@ function ReadingArea({
           切换 UI 属后续设置页，本次只保证容器属性与 CSS 就位。 */}
       <div
         data-reading-width="fluid"
+        data-code-wrap={codeWrapAttr}
+        style={readingVars}
         className={phase === "empty" || phase === "error" ? "hidden" : ""}
       >
         {busy ? (
@@ -972,8 +1170,15 @@ function ReadingArea({
           />
         ) : null}
         {/* markdown-body：github-markdown-css 排版基底（MPE 同源观感）；
-            md-content：本项目增量与变量桥的作用域，样式在 styles/markdown.css。 */}
-        <div ref={contentRef} className="markdown-body md-content" />
+            md-content：本项目增量与变量桥的作用域，样式在 styles/markdown.css。
+            变量与 data-code-wrap 在外层与本层各挂一份：外层保证「非正文的阅读区元素」
+            也能取到变量，本层保证样式层无论按哪一级选择器写都命中。 */}
+        <div
+          ref={contentRef}
+          data-code-wrap={codeWrapAttr}
+          style={readingVars}
+          className="markdown-body md-content"
+        />
       </div>
     </main>
   );
@@ -1081,10 +1286,38 @@ interface StatusBarProps {
   readonly words: number;
   readonly lines: number;
   readonly encodingLabel: string;
-  readonly zoom: number;
+  readonly zoomPercent: number;
+  readonly theme: Theme;
+  readonly onCycleZoom: () => void;
+  readonly onCycleTheme: () => void;
 }
 
-function StatusBar({ words, lines, encodingLabel, zoom }: StatusBarProps) {
+/** 三态主题的图标与名称：跟随系统=显示器 / 浅色=太阳 / 深色=月亮 */
+const THEME_LABEL: Record<Theme, string> = {
+  system: t.status.themeSystem,
+  light: t.status.themeLight,
+  dark: t.status.themeDark,
+};
+
+function ThemeGlyph({ theme }: { readonly theme: Theme }) {
+  if (theme === "light") {
+    return <IconSun size={12} />;
+  }
+  if (theme === "dark") {
+    return <IconMoon size={12} />;
+  }
+  return <IconMonitor size={12} />;
+}
+
+function StatusBar({
+  words,
+  lines,
+  encodingLabel,
+  zoomPercent,
+  theme,
+  onCycleZoom,
+  onCycleTheme,
+}: StatusBarProps) {
   return (
     <footer className="flex h-statusbar shrink-0 items-center justify-between border-t border-l2 bg-panel px-3">
       <div className="truncate whitespace-nowrap text-ui-xs text-tertiary">
@@ -1100,21 +1333,24 @@ function StatusBar({ words, lines, encodingLabel, zoom }: StatusBarProps) {
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
+        {/* 点击循环 90/100/110/125/150（批次 3 的右键菜单再给完整档位菜单） */}
         <button
           type="button"
           aria-label={t.status.zoom}
           title={t.status.zoom}
+          onClick={onCycleZoom}
           className="flex h-5 items-center rounded-chip px-1.5 text-ui-xs text-tertiary hover:bg-hover hover:text-secondary"
         >
-          {`${zoom}%`}
+          {`${zoomPercent}%`}
         </button>
         <button
           type="button"
           aria-label={t.status.toggleTheme}
-          title={t.status.toggleTheme}
+          title={THEME_LABEL[theme]}
+          onClick={onCycleTheme}
           className="flex h-5 w-5 items-center justify-center rounded-full text-tertiary hover:bg-hover hover:text-secondary"
         >
-          <IconMoon size={12} />
+          <ThemeGlyph theme={theme} />
         </button>
       </div>
     </footer>
@@ -1123,15 +1359,24 @@ function StatusBar({ words, lines, encodingLabel, zoom }: StatusBarProps) {
 
 /* ── 拖入遮罩（FR-13 / DG 6.4-9） ───────────────────────────── */
 
-function DragOverlay() {
+/** 拖入的是不支持的类型时同样出遮罩，但换 danger 描边 + 说明文案，不再静默 */
+function DragOverlay({ supported }: { readonly supported: boolean }) {
   return (
     <div
       aria-hidden
       className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-mask p-3 animate-fade-in"
     >
-      <div className="flex h-full w-full items-center justify-center rounded-card border-2 border-dashed border-brand">
-        <span className="text-ui font-medium text-primary">
-          {t.reading.dropHint}
+      <div
+        className={`flex h-full w-full items-center justify-center rounded-card border-2 border-dashed ${
+          supported ? "border-brand" : "border-danger"
+        }`}
+      >
+        <span
+          className={`text-ui font-medium ${
+            supported ? "text-primary" : "text-danger"
+          }`}
+        >
+          {supported ? t.reading.dropHint : t.reading.dropUnsupported}
         </span>
       </div>
     </div>
@@ -1155,10 +1400,13 @@ export default function App() {
   const missingPaths = useRecentFilesStore((state) => state.missingPaths);
   const setRecentFilter = useRecentFilesStore((state) => state.setFilter);
 
+  const theme = useSettingsStore((state) => state.theme);
   const resolvedTheme = useSettingsStore((state) => state.resolvedTheme);
   const settingsLoaded = useSettingsStore((state) => state.loaded);
   const outlinePinned = useSettingsStore((state) => state.outlinePinned);
-  const zoom = useSettingsStore((state) => state.zoom);
+  const zoomPercent = useSettingsStore((state) => state.zoomPercent);
+  const fontSize = useSettingsStore((state) => state.fontSize);
+  const codeWrap = useSettingsStore((state) => state.codeWrap);
 
   const scrollerRef = useRef<HTMLElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -1167,13 +1415,71 @@ export default function App() {
   const refreshTimer = useRef<number | undefined>(undefined);
   const [refreshed, setRefreshed] = useState(false);
 
+  /** 顶栏下方的警示条（文件被删 / 拖入不支持类型 / 点了失效条目） */
+  const [notice, setNotice] = useState<Notice | null>(null);
+  /** 挂载后下一帧才翻 true，让 slide-down 有起点（DG 6.4-13） */
+  const [noticeShown, setNoticeShown] = useState(false);
+  const noticeTimer = useRef<number | undefined>(undefined);
+  /** 拖入的文件是否含受支持类型；决定遮罩是 brand 还是 danger */
+  const [dragSupported, setDragSupported] = useState(true);
+  /**
+   * 相对 .md 链接带 `#fragment` 时的待跳锚点：目标文档渲染 settled 后消费一次。
+   * 放 ref 而非 state：它不参与渲染，进 state 只会多一轮无谓的重绘。
+   */
+  const pendingAnchor = useRef<{ path: string; hash: string } | null>(null);
+
   const { path, source, revision, silentRefresh, encoding, isLarge } = session;
 
   /* ── 回调 ── */
 
-  const openPath = useCallback((target: string) => {
-    void useFileSessionStore.getState().openPath(target);
+  const focusReading = useCallback(() => {
+    // preventScroll：焦点归还不能顺带把阅读位置拽走（军规 1）
+    scrollerRef.current?.focus({ preventScroll: true });
   }, []);
+
+  const dismissNotice = useCallback(() => {
+    window.clearTimeout(noticeTimer.current);
+    setNoticeShown(false);
+    setNotice(null);
+  }, []);
+
+  const showNotice = useCallback((next: Notice) => {
+    window.clearTimeout(noticeTimer.current);
+    setNotice(next);
+  }, []);
+
+  /**
+   * 打开一个路径。三条防线：
+   *   1. 点击当前已打开的文件 → 直接返回（不重读盘、不归零滚动），只把焦点还给阅读区；
+   *   2. 已知失效的路径 → 出警示条给「从列表移除」的出路，而不是摔进全屏错误页；
+   *   3. 其余照常读入，渲染完成后由渲染副作用把焦点交给阅读区。
+   */
+  const openPath = useCallback(
+    (target: string) => {
+      const state = useFileSessionStore.getState();
+      if (samePath(state.path, target) && state.phase !== "error") {
+        focusReading();
+        return;
+      }
+      if (includesPath(useRecentFilesStore.getState().missingPaths, target)) {
+        showNotice({
+          kind: "danger",
+          message: t.notice.recentMissing,
+          action: {
+            label: t.common.remove,
+            run: () => {
+              useRecentFilesStore.getState().remove(target);
+              dismissNotice();
+            },
+          },
+          autoDismiss: false,
+        });
+        return;
+      }
+      void state.openPath(target);
+    },
+    [dismissNotice, focusReading, showNotice],
+  );
 
   const openFile = useCallback(() => {
     void (async () => {
@@ -1225,17 +1531,18 @@ export default function App() {
     }
   }, []);
 
-  const jumpToHeading = useCallback((headingId: string) => {
+  /** 跳到容器内某个 id；命中并滚动了返回 true（锚点回退逻辑要据此决定是否再试一次） */
+  const jumpToHeading = useCallback((headingId: string): boolean => {
     const scroller = scrollerRef.current;
     const container = contentRef.current;
-    if (scroller === null || container === null) {
-      return;
+    if (scroller === null || container === null || headingId === "") {
+      return false;
     }
     const target = container.querySelector<HTMLElement>(
       `#${CSS.escape(headingId)}`,
     );
     if (target === null) {
-      return;
+      return false;
     }
     const top =
       scroller.scrollTop +
@@ -1245,14 +1552,188 @@ export default function App() {
     suppressActiveSyncUntil.current = performance.now() + ACTIVE_SYNC_SUPPRESS_MS;
     smoothScrollTo(scroller, Math.max(0, top));
     useFileSessionStore.getState().setActiveHeading(headingId);
+    return true;
+  }, []);
+
+  /** 大纲行点击：与文内锚点同一条跳转路径，忽略命中与否的返回值 */
+  const jumpFromOutline = useCallback(
+    (headingId: string): void => {
+      jumpToHeading(headingId);
+    },
+    [jumpToHeading],
+  );
+
+  /**
+   * 文内锚点（标题锚点 / 脚注 / 手写 `#xxx`）：先按 id 直跳，
+   * 未命中时按标题文本 slug 模糊回退一次——手写的 `#中文标题` 与渲染层生成的 id
+   * 常常只差一层编码或标点，直接放弃会让脚注/目录类链接看起来是坏的。
+   */
+  const jumpToAnchor = useCallback(
+    (rawHash: string): boolean => {
+      const hash = decodeSafe(rawHash);
+      if (hash === "") {
+        return false;
+      }
+      if (jumpToHeading(hash)) {
+        return true;
+      }
+      const container = contentRef.current;
+      if (container === null) {
+        return false;
+      }
+      const wanted = slugOf(hash);
+      const headings = Array.from(
+        container.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6"),
+      );
+      const matched = headings.find(
+        (heading) => slugOf(heading.textContent ?? "") === wanted,
+      );
+      if (matched === undefined || matched.id === "") {
+        return false;
+      }
+      return jumpToHeading(matched.id);
+    },
+    [jumpToHeading],
+  );
+
+  /** 相对 .md 链接：先记下 fragment，等目标文档渲染 settled 后再跳 */
+  const openDocumentAt = useCallback(
+    (absolutePath: string, hash: string) => {
+      const current = useFileSessionStore.getState();
+      // 链接指向的就是当前这篇：不重开（否则滚动归零），有锚点就地跳
+      if (samePath(current.path, absolutePath) && current.phase !== "error") {
+        focusReading();
+        if (hash !== "") {
+          jumpToAnchor(hash);
+        }
+        return;
+      }
+      pendingAnchor.current = hash === "" ? null : { path: absolutePath, hash };
+      openPath(absolutePath);
+    },
+    [focusReading, jumpToAnchor, openPath],
+  );
+
+  /**
+   * 阅读区链接点击委托（1.1）。WebView 的默认行为是就地导航——自绘标题栏下没有后退，
+   * 一次误点就等于应用被劫持，所以这里**一律 preventDefault**，再按 href 形态分发：
+   *   `#锚点` → jumpToHeading（平滑 + 留白 + 大纲高亮同步，且不写 location.hash 污染 history）
+   *   http(s) → 交系统浏览器
+   *   相对/绝对的 .md 家族路径 → 应用内打开（带 fragment 则渲染后跳锚点）
+   *   其余协议（file: / javascript: / mailto: …）→ 只记一条 warn，什么都不做
+   */
+  const handleReadingActivate = useCallback(
+    (event: MouseEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const anchor = target.closest("a[href]");
+      if (!(anchor instanceof HTMLAnchorElement)) {
+        return;
+      }
+      // 中键：等同左键的分发，但必须挡住 WebView 的「新窗口 / 自动滚动」默认行为
+      if (event.type === "auxclick" && event.button !== 1) {
+        return;
+      }
+      event.preventDefault();
+
+      const href = (anchor.getAttribute("href") ?? "").trim();
+      if (href === "" || href === "#") {
+        return;
+      }
+
+      if (href.startsWith("#")) {
+        if (!jumpToAnchor(href.slice(1))) {
+          console.warn("[app] anchor not found", href);
+        }
+        return;
+      }
+
+      if (EXTERNAL_HREF_RE.test(href)) {
+        void openExternal(href).catch((error: unknown) => {
+          console.warn("[app] openExternal failed", error);
+        });
+        return;
+      }
+
+      const { path: rawPath, hash } = splitHash(href);
+      const relative = decodeSafe(rawPath);
+      if (relative !== "" && isSupportedPath(relative)) {
+        if (ABSOLUTE_PATH_RE.test(relative)) {
+          openDocumentAt(relative, hash);
+          return;
+        }
+        const baseDir = dirNameOf(useFileSessionStore.getState().path ?? "");
+        if (baseDir !== null) {
+          openDocumentAt(resolveLocalPath(baseDir, relative), hash);
+          return;
+        }
+      }
+
+      console.warn("[app] link blocked", href);
+    },
+    [jumpToAnchor, openDocumentAt],
+  );
+
+  /* ── 缩放与主题（1.6：状态栏两个按钮必须真能用） ── */
+
+  /** 状态栏 zoom% 点击：按 90/100/110/125/150 循环 */
+  const cycleZoom = useCallback(() => {
+    const state = useSettingsStore.getState();
+    state.setZoomPercent(nextZoomPreset(state.zoomPercent));
+  }, []);
+
+  /** 状态栏月亮钮：跟随系统 → 浅色 → 深色 → 跟随系统 */
+  const cycleTheme = useCallback(() => {
+    useSettingsStore.getState().cycleTheme();
+  }, []);
+
+  /** 失效路径回填（1.8）：探测逻辑在 store，这里只负责挑时机 */
+  const refreshMissing = useCallback(() => {
+    void useRecentFilesStore.getState().refreshMissing();
   }, []);
 
   /* ── 启动：设置与最近列表 ── */
 
   useEffect(() => {
     void useSettingsStore.getState().load();
+    // load() 内部已带一次失效探测，这里不重复调
     void useRecentFilesStore.getState().load();
   }, []);
+
+  /** 切回窗口时重新探测：文件多半是在应用失焦期间被挪走的 */
+  useEffect(() => {
+    window.addEventListener("focus", refreshMissing);
+    return () => {
+      window.removeEventListener("focus", refreshMissing);
+    };
+  }, [refreshMissing]);
+
+  /* ── 警示条的展开与自动撤条 ── */
+
+  useEffect(() => {
+    if (notice === null) {
+      setNoticeShown(false);
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      setNoticeShown(true);
+    });
+    if (!notice.autoDismiss) {
+      return () => {
+        cancelAnimationFrame(frame);
+      };
+    }
+    noticeTimer.current = window.setTimeout(() => {
+      setNoticeShown(false);
+      setNotice(null);
+    }, NOTICE_AUTO_DISMISS_MS);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(noticeTimer.current);
+    };
+  }, [notice]);
 
   /** 大纲钉住态由 settings 持久化后回灌（DG 5.2） */
   useEffect(() => {
@@ -1265,6 +1746,7 @@ export default function App() {
   useEffect(
     () => () => {
       window.clearTimeout(refreshTimer.current);
+      window.clearTimeout(noticeTimer.current);
     },
     [],
   );
@@ -1310,7 +1792,33 @@ export default function App() {
         // 刷新失败（文件被删/被占用）时不闪 ●，交给阅读区错误块说明
         if (useFileSessionStore.getState().phase !== "error") {
           flashRefreshed();
+          // 文件又回来了（编辑器的「先删后写」保存策略很常见）：自动撤条
+          useFileSessionStore.getState().setMissing(false);
+          dismissNotice();
         }
+      });
+    })
+      .then(track)
+      .catch(warn);
+
+    // 当前文档被移动/删除：正文保留，只在顶栏下方出一条非模态警示（DG 6.4-13）
+    void onFileRemoved((removed) => {
+      const state = useFileSessionStore.getState();
+      if (!samePath(state.path, removed)) {
+        return;
+      }
+      state.setMissing(true);
+      showNotice({
+        kind: "danger",
+        message: t.notice.fileRemoved,
+        action: {
+          label: t.common.remove,
+          run: () => {
+            useRecentFilesStore.getState().remove(removed);
+            dismissNotice();
+          },
+        },
+        autoDismiss: false,
       });
     })
       .then(track)
@@ -1318,7 +1826,12 @@ export default function App() {
 
     void onDragDrop((payload) => {
       if (payload.phase === "enter") {
-        setDragOverlay(payload.paths.some(isSupportedPath));
+        // 不支持的类型也出遮罩，只是换 danger 描边 + 文案，不再静默（DG 6.4-9）。
+        // 拿不到路径（部分拖拽源在 enter 阶段不给）时按「可能可以」处理，不吓唬用户。
+        setDragSupported(
+          payload.paths.length === 0 || payload.paths.some(isSupportedPath),
+        );
+        setDragOverlay(true);
         return;
       }
       if (payload.phase === "leave") {
@@ -1330,7 +1843,14 @@ export default function App() {
         const target = payload.paths.find(isSupportedPath);
         if (target !== undefined) {
           void useFileSessionStore.getState().openPath(target);
+          return;
         }
+        showNotice({
+          kind: "warn",
+          message: t.notice.dropUnsupported,
+          action: null,
+          autoDismiss: true,
+        });
       }
     })
       .then(track)
@@ -1342,23 +1862,72 @@ export default function App() {
         unlisten();
       }
     };
-  }, [flashRefreshed, setDragOverlay]);
+  }, [dismissNotice, flashRefreshed, setDragOverlay, showNotice]);
 
   /* ── 快捷键（只实现 DG 6.5 总表里版本=M1 且外壳已具备的项） ── */
 
   useEffect(() => {
+    const reloadCurrent = (): void => {
+      const state = useFileSessionStore.getState();
+      if (state.path !== null) {
+        void state.reload({ silent: true });
+      }
+    };
+
     const onKeyDown = (event: KeyboardEvent): void => {
       const key = event.key.toLowerCase();
 
-      if (event.key === "F5") {
-        event.preventDefault();
-        const state = useFileSessionStore.getState();
-        if (state.path !== null) {
-          void state.reload({ silent: true });
+      // Esc 语义链（DG 6.5）：过滤框有值 → 清空并失焦；否则逐层收浮层；都没有则无动作
+      if (event.key === "Escape") {
+        const active = document.activeElement;
+        if (
+          active instanceof HTMLInputElement &&
+          active.dataset.sidebarFilter === "true"
+        ) {
+          if (active.value !== "") {
+            event.preventDefault();
+            useRecentFilesStore.getState().setFilter("");
+            active.blur();
+            focusReading();
+            return;
+          }
+          active.blur();
+          return;
+        }
+        if (useUiStateStore.getState().closeTopLayer()) {
+          event.preventDefault();
         }
         return;
       }
+
+      if (event.key === "F5") {
+        event.preventDefault();
+        reloadCurrent();
+        return;
+      }
       if (!event.ctrlKey) {
+        return;
+      }
+      // Ctrl+R 在关掉 WebView2 快捷键后不再是「整页刷新」，按 DG 6.5 白名单映射为重新渲染
+      if (key === "r" && !event.altKey) {
+        event.preventDefault();
+        reloadCurrent();
+        return;
+      }
+      // 缩放三键：数字键盘的 +/- 同样落在 "+"/"-"，一并接住
+      if (key === "=" || key === "+") {
+        event.preventDefault();
+        useSettingsStore.getState().nudgeZoom(ZOOM_STEP);
+        return;
+      }
+      if (key === "-" || key === "_") {
+        event.preventDefault();
+        useSettingsStore.getState().nudgeZoom(-ZOOM_STEP);
+        return;
+      }
+      if (key === "0") {
+        event.preventDefault();
+        useSettingsStore.getState().resetZoom();
         return;
       }
       if (key === "o" && event.altKey) {
@@ -1381,7 +1950,37 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [openFile, toggleOutline, toggleSidebar]);
+  }, [focusReading, openFile, toggleOutline, toggleSidebar]);
+
+  /* ── 阅读区事件委托：链接点击（1.1）与 Ctrl+滚轮缩放（1.4） ── */
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (scroller === null) {
+      return;
+    }
+
+    const onWheel = (event: WheelEvent): void => {
+      if (!event.ctrlKey) {
+        return;
+      }
+      // 不 preventDefault 的话，WebView2 会把整个界面（含顶栏状态栏）一起缩放
+      event.preventDefault();
+      useSettingsStore
+        .getState()
+        .nudgeZoom(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
+    };
+
+    scroller.addEventListener("click", handleReadingActivate);
+    scroller.addEventListener("auxclick", handleReadingActivate);
+    // passive:false 是硬要求：React 的合成 wheel 是被动监听，preventDefault 会被忽略
+    scroller.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      scroller.removeEventListener("click", handleReadingActivate);
+      scroller.removeEventListener("auxclick", handleReadingActivate);
+      scroller.removeEventListener("wheel", onWheel);
+    };
+  }, [handleReadingActivate]);
 
   /* ── 渲染管线：revision 变化（含同路径重载）即重渲染 ── */
 
@@ -1426,6 +2025,20 @@ export default function App() {
           scroller.scrollTop = keepTop;
         }
         suppressActiveSyncUntil.current = 0;
+        hardenToolbarSelection(container);
+
+        // 主动打开的文档把焦点交给阅读区：PgDn/PgUp/Space/Home/End 立刻能翻页。
+        // 静默刷新不抢焦点（用户可能正在左栏过滤框里打字）。
+        if (!silentRefresh && scroller !== null) {
+          scroller.focus({ preventScroll: true });
+        }
+
+        // 相对 .md 链接带 #fragment：等到这一刻（渲染 settled）再跳，早跳必落空
+        const pending = pendingAnchor.current;
+        pendingAnchor.current = null;
+        if (pending !== null && samePath(pending.path, path)) {
+          jumpToAnchor(pending.hash);
+        }
       })
       .catch((error: unknown) => {
         if (cancelled) {
@@ -1442,7 +2055,7 @@ export default function App() {
     };
     // source / silentRefresh / encoding / isLarge 与 revision 同批更新（fileSession 的一次 set），
     // 故只用 revision 当触发令牌，避免同一次读入触发两次渲染。
-  }, [path, revision, resolvedTheme, handleActiveHeading]);
+  }, [path, revision, resolvedTheme, handleActiveHeading, jumpToAnchor]);
 
   /* ── 派生数据 ── */
 
@@ -1476,6 +2089,14 @@ export default function App() {
         onOpenFile={openFile}
       />
 
+      {notice === null ? null : (
+        <NoticeBar
+          notice={notice}
+          shown={noticeShown}
+          onDismiss={dismissNotice}
+        />
+      )}
+
       <div className="flex min-h-0 flex-1">
         {sidebarCollapsed ? null : (
           <Sidebar
@@ -1497,6 +2118,9 @@ export default function App() {
           path={path}
           scrollerRef={scrollerRef}
           contentRef={contentRef}
+          fontSize={fontSize}
+          zoomPercent={zoomPercent}
+          codeWrap={codeWrap}
           onOpenFile={openFile}
           onRetry={retry}
         />
@@ -1505,7 +2129,7 @@ export default function App() {
           <OutlinePanel
             nodes={session.outline}
             activeId={session.activeHeadingId}
-            onJump={jumpToHeading}
+            onJump={jumpFromOutline}
             onClose={toggleOutline}
           />
         ) : null}
@@ -1515,10 +2139,13 @@ export default function App() {
         words={words}
         lines={lines}
         encodingLabel={encodingLabel}
-        zoom={zoom}
+        zoomPercent={zoomPercent}
+        theme={theme}
+        onCycleZoom={cycleZoom}
+        onCycleTheme={cycleTheme}
       />
 
-      {dragOverlay ? <DragOverlay /> : null}
+      {dragOverlay ? <DragOverlay supported={dragSupported} /> : null}
     </div>
   );
 }

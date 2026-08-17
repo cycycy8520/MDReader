@@ -74,6 +74,19 @@ export const zhCN = {
     fileMissing: "文件已被移动或删除",
     /** 拖入文件时的全窗遮罩文案（FR-13 / DG 6.4-9） */
     dropHint: "松开以打开文件",
+    /** 拖入的是不支持的类型：遮罩换 danger 描边，配这一行说明 */
+    dropUnsupported: "仅支持 Markdown 文件",
+  },
+
+  /**
+   * 顶栏下方的警示条（DG 6.4-13：非模态、不遮内容、带一个出路动作）。
+   * 与阅读区的全屏错误块分工：正文还在、只是外部世界变了，用警示条；
+   * 正文根本读不出来，才走错误块。
+   */
+  notice: {
+    fileRemoved: "文件已被移动或删除，正文为最后一次成功读取的内容",
+    recentMissing: "该文件已不在原位置",
+    dropUnsupported: "只能打开 .md / .markdown / .mdown / .mkd / .mkdn 文件",
   },
 
   /**
@@ -94,6 +107,10 @@ export const zhCN = {
     fontSize: "字号",
     theme: "主题",
     toggleTheme: "切换主题",
+    /** 主题三态名：状态栏月亮/太阳/显示器钮的 tooltip 显示当前态 */
+    themeSystem: "跟随系统",
+    themeLight: "浅色",
+    themeDark: "深色",
     /** 无文档时的占位字形（编码位等） */
     placeholder: "—",
   },
@@ -110,6 +127,11 @@ export const zhCN = {
     relocate: "重新定位",
     openFolder: "打开所在文件夹",
     copyPath: "复制文件路径",
+    /**
+     * 未实现功能的按钮 tooltip 后缀（拼在功能名后面，如「导出（开发中）」）。
+     * 界面上不允许存在"看起来能点、点了没反应"的元素：没做的一律置灰并如实说明。
+     */
+    comingSoonSuffix: "（开发中）",
   },
 } as const;
 

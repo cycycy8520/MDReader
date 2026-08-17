@@ -176,6 +176,74 @@
   }
 }
 
+/* ══════════════════════════════════════════════════════════════
+   文件警示条 .md-alert-bar（UPGRADE_PLAN 1.8）
+
+   用途：后端 "file-removed" 事件到达后，在顶栏下方滑出一条提示（正文保留不清空），
+   file-changed 恢复时由 App 层撤条。**非模态**：它只是顶栏与阅读区之间多出的一行，
+   不遮挡、不夺焦点、不阻塞任何操作 —— 只读查看器不该为"文件没了"弹窗打断阅读。
+
+   刻意不写在 @layer components 里：Tailwind v3 会按内容扫描裁剪 components 层，
+   这条类名要是某次重构从 TSX 里消失一阵，样式会被静默摘掉，回来时又变成"没样式的裸条"。
+   代价是本条（0,1,0）在源顺序上排在 @tailwind utilities 之后，
+   同名同特异性的工具类（如 p-2）压不过它 —— 所以这里给的是**完整成品**，
+   要调间距/配色请直接改这里，不要在 TSX 上叠工具类。
+
+   交互铁律：整条不可选中、无 hover 位移、无阴影抬升；
+   语义色只落在图标上（--md-alert-tone），底仍是 bg-card，避免整条染色抢正文注意力。
+   ══════════════════════════════════════════════════════════════ */
+
+.md-alert-bar {
+  --md-alert-tone: var(--md-warn);
+
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background-color: var(--md-bg-card);
+  border-bottom: 1px solid var(--md-border-l2);
+  color: var(--md-text-secondary);
+  /* 与 text-ui-sm（13/20）同配方：比正文小一档，是"系统在说话"而不是文档内容 */
+  font-size: 13px;
+  line-height: 20px;
+  user-select: none;
+  /* 进场 160ms 下滑；离场由 App 层直接卸载（不做退场动画，撤条要干脆）。
+     160ms 是规格钦定值，介于 --md-duration-fast(100) 与 --md-duration(200) 之间，
+     Token 层无对应档位，故此处写字面量（不新增 Token，tokens.css 不归本次改动） */
+  animation: md-alert-bar-in 160ms var(--md-ease) both;
+}
+
+/* 兜底：万一 App 层把条子挂进了 [data-reading-root] 内部，
+   上面那条 [data-reading-root] * { user-select: text } 会直接命中条内的文字节点
+   （父级的 none 压不住直接命中的规则）。同特异性靠源顺序在后取胜。 */
+.md-alert-bar * {
+  user-select: none;
+}
+
+/* 图标吃语义色并锁死尺寸，文字再长也不挤压它 */
+.md-alert-bar svg {
+  flex: none;
+  color: var(--md-alert-tone);
+}
+
+/* 危险态（如"文件已被删除"要升级语气时）：只换语义色，版式不变 */
+.md-alert-bar[data-tone="danger"] {
+  --md-alert-tone: var(--md-danger);
+}
+
+/* 从自己所在行的上沿滑入。父容器若加 overflow:hidden 会得到严格裁切效果；
+   不加也只是 160ms 内轻微掠过顶栏区域，不留痕迹。 */
+@keyframes md-alert-bar-in {
+  from {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @layer utilities {
   /* ── .quiet-bars：安静滚动条（左栏 / 大纲栏用） ───────────────
      指针不在容器内时把 thumb 变透明，指针进入才显形。

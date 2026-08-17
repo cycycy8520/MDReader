@@ -1,21 +1,36 @@
 /**
  * 界面瞬时状态 store —— 对应 DG 7.1 状态层的 uiState。
- * 规则：需要跨重启记忆的（主题/字号/缩放/大纲钉住/窗口几何）属于 settings store，
- *       这里只放会话内的开合状态与浮层状态（DG 5.2 / 6.6）。
+ * 规则：需要跨重启记忆的（主题/字号/缩放/大纲钉住/左栏宽度与折叠/窗口几何）属于
+ *       settings store，这里只放会话内的开合状态与浮层状态（DG 5.2 / 6.6）。
+ *
+ * 例外说明：`sidebarCollapsed` / `sidebarWidth` 两项**真源在 settings**（需持久化），
+ * 本 store 保留同名镜像字段并把 setter 转发过去——既满足持久化契约，
+ * 又不打断既有组件的订阅路径（见文件末尾的订阅回灌）。
  */
 
 import { create } from "zustand";
 
+import { useSettingsStore } from "./settings";
 import type { OutlineMode, Toast } from "../types";
 
-/** 左栏宽度约束（DG 5.2：默认 260，可拖拽 200–360） */
-export const SIDEBAR_WIDTH_DEFAULT = 260;
-export const SIDEBAR_WIDTH_MIN = 200;
-export const SIDEBAR_WIDTH_MAX = 360;
+/**
+ * 左栏宽度约束（DG 5.2）。**唯一定义在 settings store**（264–420，默认 280），
+ * 这里只做转出，避免此前「uiState 200–360 / tokens.css 264–420 / Rust 260」三处打架。
+ */
+export {
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MIN,
+  SIDEBAR_WIDTH_MAX,
+} from "./settings";
 
 interface UiState {
-  /** Ctrl+B 折叠左栏（DG 6.5） */
+  /**
+   * Ctrl+B 折叠左栏（DG 6.5）。
+   * 真源在 settings store（要跨重启记忆），这里是订阅回灌的**只读镜像**——
+   * 组件既可以读 uiState 也可以读 settings，两边永远一致；写请走下面的 action。
+   */
   sidebarCollapsed: boolean;
+  /** 同上：真源是 settings.sidebarWidth，此处为镜像 */
   sidebarWidth: number;
   /** 大纲两态 + 收起（FR-04；钉住态由 settings 持久化后回灌） */
   outlineMode: OutlineMode;
@@ -50,13 +65,9 @@ interface UiState {
 
 const TOAST_LIMIT = 3;
 
-function clampWidth(width: number): number {
-  return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, width));
-}
-
 export const useUiStateStore = create<UiState>()((set, get) => ({
-  sidebarCollapsed: false,
-  sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
+  sidebarCollapsed: useSettingsStore.getState().sidebarCollapsed,
+  sidebarWidth: useSettingsStore.getState().sidebarWidth,
   outlineMode: "hidden",
   findOpen: false,
   findQuery: "",
@@ -66,12 +77,15 @@ export const useUiStateStore = create<UiState>()((set, get) => ({
   dragOverlay: false,
   toasts: [],
 
+  // 下面两个 action 只转发给 settings store（钳位 + 持久化在那边），
+  // 本 store 的镜像字段由文件末尾的订阅回灌，不在这里 set，保证单一真源。
   toggleSidebar: () => {
-    set({ sidebarCollapsed: !get().sidebarCollapsed });
+    const settings = useSettingsStore.getState();
+    settings.setSidebarCollapsed(!settings.sidebarCollapsed);
   },
 
   setSidebarWidth: (width) => {
-    set({ sidebarWidth: clampWidth(width) });
+    useSettingsStore.getState().setSidebarWidth(width);
   },
 
   setOutlineMode: (mode) => {
@@ -132,3 +146,20 @@ export const useUiStateStore = create<UiState>()((set, get) => ({
     return false;
   },
 }));
+
+/**
+ * settings → uiState 的单向回灌：左栏折叠态/宽度要跨重启记忆，真源必须是 settings，
+ * 但既有组件按 `useUiStateStore(s => s.sidebarCollapsed)` 订阅，故在此镜像一份。
+ * 只在两个字段真变化时 setState，避免无谓渲染。
+ */
+useSettingsStore.subscribe((state, previous) => {
+  if (
+    state.sidebarCollapsed !== previous.sidebarCollapsed ||
+    state.sidebarWidth !== previous.sidebarWidth
+  ) {
+    useUiStateStore.setState({
+      sidebarCollapsed: state.sidebarCollapsed,
+      sidebarWidth: state.sidebarWidth,
+    });
+  }
+});

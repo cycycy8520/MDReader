@@ -12,12 +12,14 @@
  * generate_handler!）。改任何一侧都要同步改另一侧，否则运行期才会暴露。
  * Rust struct 统一 #[serde(rename_all = "camelCase")]，故 TS 侧直接用 camelCase。
  *
- * 当前为 M0 骨架：Rust 侧命令体一律返回 AppError::NotImplemented，
- * 前端调用会 reject，属预期行为（实现随 M1 各任务落地）。
+ * 实现进度（2026-08-18）：files.rs（读文件/监听/最近列表/资源管理器定位）与
+ * settings.rs（读写配置）已实装；export.rs（HTML/PDF/打印）、shell_integ 的部分命令、
+ * settings 的飞书凭据位仍返回 AppError::NotImplemented，调用会 reject，属预期行为。
  */
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -37,6 +39,8 @@ import type {
 export const EVENT_PRINT_READY = "PRINT_READY";
 /** 后端 → 前端事件名（FR-06 file watch / FR-12 单实例路由） */
 export const EVENT_FILE_CHANGED = "file-changed";
+/** 监听中的文件被删除/改名（Rust files.rs 同名常量，两侧不得各改各的） */
+export const EVENT_FILE_REMOVED = "file-removed";
 export const EVENT_OPEN_PATH = "open-path";
 
 /* ── 文件（M1：files.rs） ─────────────────────────────────────── */
@@ -70,6 +74,17 @@ export async function revealInExplorer(path: string): Promise<void> {
 }
 
 /**
+ * 批量探测路径是否存在，返回**不存在**的那部分（最近列表失效条目灰显，FR-03）。
+ *
+ * 只回传失效子集而不是全量布尔表：200 条的列表里失效通常只有个位数，
+ * 前端拿到的就是可以直接塞进 missingPaths 的东西。
+ * → Rust: files::probe_paths(paths)
+ */
+export async function probePaths(paths: string[]): Promise<string[]> {
+  return invoke<string[]>("probe_paths", { paths });
+}
+
+/**
  * 本地文件绝对路径 → WebView 可加载的 asset 协议 URL（DG 8「查看态本地图片」）。
  *
  * 不是 invoke，而是 Tauri 内置的 `convertFileSrc`：它把路径编码进
@@ -83,6 +98,42 @@ export async function revealInExplorer(path: string): Promise<void> {
  */
 export function toAssetUrl(path: string): string {
   return convertFileSrc(path);
+}
+
+/* ── 外部打开（tauri-plugin-opener，非自定义 command） ────────── */
+/* 走官方插件而不是自己写 command：ShellExecute 的参数转义、UAC、UWP 应用调用
+   都是插件已经处理过的坑。权限见 capabilities/default.json 的
+   `opener:allow-open-url` / `opener:allow-open-path`。 */
+
+/** openExternal 只放行的两种协议——其余（file:/javascript:/data: …）一律拒绝 */
+const EXTERNAL_PROTOCOLS = ["http:", "https:"];
+
+/**
+ * 用**系统默认浏览器**打开外链（UPGRADE_PLAN 1.1：正文外链绝不导航走 WebView）。
+ *
+ * 这里再做一次协议白名单，是纵深防御的最后一环：调用方（链接委托）已经判过一次，
+ * 但只要有一处漏判，file:/javascript: 就会被交给 ShellExecute 执行任意程序。
+ * 非法 URL 直接抛错，由调用方按失败处理（不弹系统对话框、不静默吞掉）。
+ */
+export async function openExternal(url: string): Promise<void> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`openExternal: malformed url ${url}`);
+  }
+  if (!EXTERNAL_PROTOCOLS.includes(parsed.protocol)) {
+    throw new Error(`openExternal: blocked protocol ${parsed.protocol}`);
+  }
+  return openUrl(parsed.href);
+}
+
+/**
+ * 用系统「打开方式」打开源文件（UPGRADE_PLAN 3.3「用其他编辑器打开源文件」）。
+ * 严格只读的边界不变：我们只是把文件交给外部程序，自己不写一个字节。
+ */
+export async function openWithDefaultApp(path: string): Promise<void> {
+  return openPath(path);
 }
 
 /* ── 最近列表（M1：files.rs + recent.json，DG 7.3） ──────────── */
@@ -266,6 +317,19 @@ export async function onFileChanged(
   handler: (path: string) => void,
 ): Promise<UnlistenFn> {
   return listen<string>(EVENT_FILE_CHANGED, (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * 订阅「监听中的文件已消失」事件（删除 / 改名 / 移动，FR-06）。
+ * payload 与 file-changed 一样是文件绝对路径。约定：正文保留，只在顶栏挂警示条，
+ * 文件恢复时后端会重新发 file-changed，由前端撤条（UPGRADE_PLAN 1.8）。
+ */
+export async function onFileRemoved(
+  handler: (path: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>(EVENT_FILE_REMOVED, (event) => {
     handler(event.payload);
   });
 }

@@ -1,8 +1,8 @@
 //! DG 7.1 `settings.rs` 职责：配置读写；飞书密钥 DPAPI 加密。
 //!
 //! 存储位置（DG 7.3）：`%APPDATA%\MDNaonao\`
-//! * `settings.json` —— 主题、字号、缩放、导出偏好、代码折行、元数据显示、
-//!   大纲钉住态、窗口几何；
+//! * `settings.json` —— 主题、字号、缩放、导出偏好、代码折行、frontmatter 显示、
+//!   大纲钉住态、左栏宽度/折叠、窗口几何；字段契约见 [`Settings`]；
 //! * `lark-token.json` —— 飞书 app_id / app_secret / token 缓存，
 //!   **必须 Windows DPAPI 加密后落盘**，不得明文。
 //!
@@ -18,7 +18,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use tauri::Manager;
 
 use crate::error::{AppError, AppResult};
@@ -61,14 +61,38 @@ pub enum HtmlExportMode {
     WithAssets,
 }
 
+/// frontmatter 属性区的显示方式（FR-14 三态）。
+///
+/// 取代旧的 `show_metadata: bool`——布尔只能表达「显示/隐藏」，而 FR-14 要的是
+/// 卡片 / 隐藏 / 原样代码块三态。旧配置的迁移由前端 `stores/settings.ts`
+/// 的 `migrateSettings` 承担（`showMetadata:true→card`、`false→hidden`），
+/// 后端只认新字段：读到旧文件时本字段走 serde default（`card`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum FrontmatterDisplay {
+    /// 渲染为属性卡片（默认）
+    #[default]
+    Card,
+    /// 整块隐藏
+    Hidden,
+    /// 原样显示为代码块
+    Raw,
+}
+
 /// 窗口几何，用于重启还原（DG 6.2「窗口记忆」）。
-/// 异常位置（显示器被拔掉）由前端/启动逻辑回落主屏居中。
+///
+/// `x`/`y` 是 `Option`：`null` = **尚无记录**（首启）或坐标被判废（显示器被拔掉），
+/// 由启动逻辑回落主屏居中。用 `0,0` 当哨兵是不行的——那本身就是一个合法坐标。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct WindowGeometry {
-    pub x: i32,
-    pub y: i32,
+    #[serde(deserialize_with = "deserialize_coordinate")]
+    pub x: Option<i32>,
+    #[serde(deserialize_with = "deserialize_coordinate")]
+    pub y: Option<i32>,
+    #[serde(deserialize_with = "deserialize_dimension")]
     pub width: u32,
+    #[serde(deserialize_with = "deserialize_dimension")]
     pub height: u32,
     pub maximized: bool,
 }
@@ -76,8 +100,8 @@ pub struct WindowGeometry {
 impl Default for WindowGeometry {
     fn default() -> Self {
         Self {
-            x: 0,
-            y: 0,
+            x: None,
+            y: None,
             width: 1200,
             height: 800,
             maximized: false,
@@ -85,22 +109,58 @@ impl Default for WindowGeometry {
     }
 }
 
-/// `settings.json` 结构。字段名走 camelCase，前端 `stores/settings` 直接对齐。
+/// 窗口宽高的宽松反序列化。
+///
+/// 为什么不直接用 `u32`：`settings.json` 是用户可手改的文本，一旦出现
+/// `"width": -1` 或 `"width": 800.5`，`u32` 会让**整个** Settings 解析失败 →
+/// 走备份重建 → 用户所有偏好归零。这里统一收成 `f64` 再判：负数/0/NaN 一律
+/// 归 0，由 [`Settings::sanitize`] 换成默认尺寸；超大值先夹到上限。
+fn deserialize_dimension<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = f64::deserialize(deserializer)?;
+    if !raw.is_finite() || raw < 1.0 {
+        // 0 是「非法尺寸」哨兵，sanitize 会把它换成默认值
+        return Ok(0);
+    }
+    Ok(raw.min(f64::from(WINDOW_MAX_EDGE)) as u32)
+}
+
+/// 窗口坐标的宽松反序列化：`null` / 非有限值 / 离谱到不可能是屏幕坐标的值
+/// 一律回落 `None`（= 无记录，启动时居中）。坐标可以为负（副屏在主屏左侧）。
+fn deserialize_coordinate<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<f64>::deserialize(deserializer)?;
+    Ok(raw
+        .filter(|value| value.is_finite() && value.abs() <= f64::from(WINDOW_MAX_EDGE))
+        .map(|value| value as i32))
+}
+
+/// `settings.json` 结构 —— **前后端唯一契约**（2026-08-18 批次 1.3）。
+///
+/// 序列化后的 10 个 key 必须与 TS `types/Settings`、`stores/settings.ts` 逐字相同，
+/// wire 格式一律 camelCase（`font_size` → `fontSize`）。少一个字段的后果不是报错，
+/// 而是**静默丢失**：前端不发的字段被 `#[serde(default)]` 填成默认值再原样写回盘，
+/// 等于把用户的设置反向覆写。这条契约由下方 `serialized_keys_match_contract` 单测
+/// 机器把关（多一个 / 少一个 / 改名都会红）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub theme: ThemeMode,
-    /// 正文字号（px，DG 5.4 基准 16）
+    /// 正文字号（px，范围 14–20，DG 5.4 基准 16）
     pub font_size: u16,
     /// 缩放百分比，范围 90–150（DG 5.2 状态栏）
     pub zoom_percent: u16,
     /// 代码块折行（关=横向滚动，DG 5.4）
     pub code_wrap: bool,
-    /// 显示 frontmatter 属性卡片（FR-14）
-    pub show_metadata: bool,
+    /// frontmatter 显示方式（FR-14 三态）
+    pub frontmatter_display: FrontmatterDisplay,
     /// 大纲钉住态（FR-04）
     pub outline_pinned: bool,
-    /// 左栏宽度，范围 200–360（DG 5.2）
+    /// 左栏宽度，范围 264–420（DG 5.2 / UPGRADE_PLAN 4.3 统一后的区间）
     pub sidebar_width: u32,
     /// 左栏是否折叠（Ctrl+B）
     pub sidebar_collapsed: bool,
@@ -112,12 +172,12 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: ThemeMode::System,
-            font_size: 16,
-            zoom_percent: 100,
+            font_size: FONT_SIZE_DEFAULT,
+            zoom_percent: ZOOM_DEFAULT,
             code_wrap: false,
-            show_metadata: true,
+            frontmatter_display: FrontmatterDisplay::Card,
             outline_pinned: false,
-            sidebar_width: 260,
+            sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             sidebar_collapsed: false,
             html_export_mode: HtmlExportMode::SingleFile,
             window: WindowGeometry::default(),
@@ -129,18 +189,27 @@ impl Default for Settings {
 // 合法区间（与前端 stores/settings.ts、stores/uiState.ts 的常量必须一一对应）
 // ---------------------------------------------------------------------------
 
-/// 正文字号档位下限（前端 `READING_FONT_SIZE_MIN`，DG 6.7）
+/// 正文字号档位下限（前端 `FONT_SIZE_MIN`，DG 6.7）
 const FONT_SIZE_MIN: u16 = 14;
-/// 正文字号档位上限（前端 `READING_FONT_SIZE_MAX`，DG 6.7）
+/// 正文字号档位上限（前端 `FONT_SIZE_MAX`，DG 6.7）
 const FONT_SIZE_MAX: u16 = 20;
+/// 正文字号默认值（前端 `FONT_SIZE_DEFAULT`，DG 5.4）
+const FONT_SIZE_DEFAULT: u16 = 16;
 /// 缩放下限（前端 `ZOOM_MIN`，DG 5.2）
 const ZOOM_MIN: u16 = 90;
 /// 缩放上限（前端 `ZOOM_MAX`，DG 5.2）
 const ZOOM_MAX: u16 = 150;
-/// 左栏宽度下限（前端 `SIDEBAR_WIDTH_MIN`，DG 5.2）
-const SIDEBAR_WIDTH_MIN: u32 = 200;
-/// 左栏宽度上限（前端 `SIDEBAR_WIDTH_MAX`，DG 5.2）
-const SIDEBAR_WIDTH_MAX: u32 = 360;
+/// 缩放默认值（前端 `ZOOM_DEFAULT`）
+const ZOOM_DEFAULT: u16 = 100;
+/// 左栏宽度下限（前端 `SIDEBAR_WIDTH_MIN`）。
+///
+/// 2026-08-18：此前 Rust(200–360) / uiState(200–360) / tokens.css(264–420) 三处打架，
+/// 按 UPGRADE_PLAN 4.3 与批次 1 全局契约统一为 264–420、默认 280（= tokens.css 基准）。
+const SIDEBAR_WIDTH_MIN: u32 = 264;
+/// 左栏宽度上限（前端 `SIDEBAR_WIDTH_MAX`）
+const SIDEBAR_WIDTH_MAX: u32 = 420;
+/// 左栏宽度默认值（前端 `SIDEBAR_WIDTH_DEFAULT`）
+const SIDEBAR_WIDTH_DEFAULT: u32 = 280;
 /// 窗口最小尺寸，与 `tauri.conf.json > app.windows[0].minWidth/minHeight` 一致
 const WINDOW_MIN_WIDTH: u32 = 800;
 const WINDOW_MIN_HEIGHT: u32 = 600;
@@ -167,6 +236,16 @@ impl Settings {
         self.sidebar_width = self
             .sidebar_width
             .clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX);
+
+        // 窗口几何：0（含反序列化时判废的负数/NaN）意味着「这不是一组可用的尺寸」，
+        // 回落**默认值**而不是最小值——把窗口开成 800×600 的最小尺寸不像还原，像出故障。
+        let defaults = WindowGeometry::default();
+        if self.window.width == 0 {
+            self.window.width = defaults.width;
+        }
+        if self.window.height == 0 {
+            self.window.height = defaults.height;
+        }
         self.window.width = self.window.width.clamp(WINDOW_MIN_WIDTH, WINDOW_MAX_EDGE);
         self.window.height = self.window.height.clamp(WINDOW_MIN_HEIGHT, WINDOW_MAX_EDGE);
     }
@@ -403,7 +482,28 @@ pub fn dpapi_unprotect(cipher: &[u8]) -> AppResult<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
+
+    /// 契约 A（2026-08-18 批次 1.3）：`settings.json` / IPC 载荷的 **全部** 顶层 key。
+    /// 与 TS `types/index.ts` 的 `SETTINGS_KEY_MAP`、`stores/settings.ts` 的
+    /// `DEFAULT_SETTINGS` 一一对应。改这里等于改前后端契约，必须三处同改。
+    const CONTRACT_KEYS: [&str; 10] = [
+        "theme",
+        "fontSize",
+        "zoomPercent",
+        "codeWrap",
+        "frontmatterDisplay",
+        "outlinePinned",
+        "sidebarWidth",
+        "sidebarCollapsed",
+        "htmlExportMode",
+        "window",
+    ];
+
+    /// `window` 子对象的 key 全集（TS `WindowGeometry`）。
+    const CONTRACT_WINDOW_KEYS: [&str; 5] = ["x", "y", "width", "height", "maximized"];
 
     /// 默认值必须与 DG 5.2 / 5.4 的基准一致。
     #[test]
@@ -411,17 +511,103 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.font_size, 16);
         assert_eq!(settings.zoom_percent, 100);
-        assert_eq!(settings.sidebar_width, 260);
+        assert_eq!(settings.sidebar_width, 280);
         assert_eq!(settings.theme, ThemeMode::System);
+        assert_eq!(settings.frontmatter_display, FrontmatterDisplay::Card);
+        assert_eq!(settings.window.x, None);
+        assert_eq!(settings.window.y, None);
     }
 
-    /// 序列化字段名走 camelCase（前端 store 直接对齐）。
+    /// **契约闸门**：序列化后的 key 集合必须与 [`CONTRACT_KEYS`] 恰好相等。
+    ///
+    /// 多一个（后端偷偷加字段，前端 save 时不带 → 被覆写成默认值）、
+    /// 少一个（前端存了、后端不认 → 保存即丢）、改名（同上）——三种漂移全部在此拦下。
+    /// 这是批次 1.3 那个 blocker 的机器闸门，别把它改成「包含」断言。
     #[test]
-    fn serializes_with_camel_case_keys() {
+    fn serialized_keys_match_contract() {
         let json = serde_json::to_value(Settings::default()).expect("序列化不应失败");
-        assert!(json.get("fontSize").is_some());
-        assert!(json.get("zoomPercent").is_some());
-        assert!(json.get("htmlExportMode").is_some());
+        let object = json.as_object().expect("Settings 应序列化为 JSON 对象");
+
+        let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+        let expected: BTreeSet<&str> = CONTRACT_KEYS.into_iter().collect();
+        assert_eq!(
+            actual, expected,
+            "settings 字段契约漂移：Rust 侧的 key 集合与契约 A 不一致（TS 侧 types/Settings 也要同步）"
+        );
+
+        let window = object["window"]
+            .as_object()
+            .expect("window 应序列化为 JSON 对象");
+        let actual_window: BTreeSet<&str> = window.keys().map(String::as_str).collect();
+        let expected_window: BTreeSet<&str> = CONTRACT_WINDOW_KEYS.into_iter().collect();
+        assert_eq!(actual_window, expected_window, "window 子对象字段契约漂移");
+    }
+
+    /// 枚举的 wire 取值也是契约的一部分（TS 侧是字面量联合类型，拼错即类型不匹配）。
+    #[test]
+    fn enum_wire_values_match_contract() {
+        let json = serde_json::to_value(Settings::default()).expect("序列化不应失败");
+        assert_eq!(json["theme"], "system");
+        assert_eq!(json["frontmatterDisplay"], "card");
+        assert_eq!(json["htmlExportMode"], "single-file");
+        assert!(json["window"]["x"].is_null(), "无记录的坐标必须是 null");
+
+        for (value, wire) in [
+            (FrontmatterDisplay::Card, "card"),
+            (FrontmatterDisplay::Hidden, "hidden"),
+            (FrontmatterDisplay::Raw, "raw"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(value).expect("序列化不应失败"),
+                serde_json::Value::from(wire)
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(HtmlExportMode::WithAssets).expect("序列化不应失败"),
+            serde_json::Value::from("with-assets")
+        );
+        for (value, wire) in [(ThemeMode::Light, "light"), (ThemeMode::Dark, "dark")] {
+            assert_eq!(
+                serde_json::to_value(value).expect("序列化不应失败"),
+                serde_json::Value::from(wire)
+            );
+        }
+    }
+
+    /// 前端发来的完整载荷必须原样解析回来（保存 → 重启 → 全部保留）。
+    #[test]
+    fn round_trips_full_payload_from_frontend() {
+        let raw = br#"{
+            "theme": "dark",
+            "fontSize": 18,
+            "zoomPercent": 125,
+            "codeWrap": true,
+            "frontmatterDisplay": "raw",
+            "outlinePinned": true,
+            "sidebarWidth": 320,
+            "sidebarCollapsed": true,
+            "htmlExportMode": "with-assets",
+            "window": { "x": -1280, "y": 40, "width": 1600, "height": 900, "maximized": true }
+        }"#;
+        let mut settings = parse_settings(raw).expect("完整载荷必须能解析");
+        settings.sanitize();
+
+        assert_eq!(settings.theme, ThemeMode::Dark);
+        assert_eq!(settings.font_size, 18);
+        assert_eq!(settings.zoom_percent, 125);
+        assert!(settings.code_wrap);
+        assert_eq!(settings.frontmatter_display, FrontmatterDisplay::Raw);
+        assert!(settings.outline_pinned);
+        assert_eq!(settings.sidebar_width, 320);
+        assert!(settings.sidebar_collapsed);
+        assert_eq!(settings.html_export_mode, HtmlExportMode::WithAssets);
+        assert_eq!(settings.window.x, Some(-1280));
+        assert_eq!(settings.window.width, 1600);
+        assert!(settings.window.maximized);
+
+        // 再走一圈序列化 → 反序列化，值不能被路上改掉
+        let json = serde_json::to_vec(&settings).expect("序列化不应失败");
+        assert_eq!(parse_settings(&json).expect("回环解析应成功"), settings);
     }
 
     /// 手改过的越界值必须被钳回区间，而不是原样带进 UI。
@@ -434,7 +620,7 @@ mod tests {
             ..Settings::default()
         };
         settings.window.width = 10;
-        settings.window.height = 0;
+        settings.window.height = 900;
 
         settings.sanitize();
 
@@ -442,7 +628,53 @@ mod tests {
         assert_eq!(settings.zoom_percent, ZOOM_MIN);
         assert_eq!(settings.sidebar_width, SIDEBAR_WIDTH_MAX);
         assert_eq!(settings.window.width, WINDOW_MIN_WIDTH);
-        assert_eq!(settings.window.height, WINDOW_MIN_HEIGHT);
+        assert_eq!(settings.window.height, 900, "区间内的高度不应被动");
+    }
+
+    /// 窗口宽高为 0 / 负数 / 非有限值：整份配置不许因此解析失败，几何回落默认。
+    #[test]
+    fn window_geometry_falls_back_to_defaults_on_bogus_size() {
+        let defaults = WindowGeometry::default();
+
+        let mut zeroed = parse_settings(br#"{ "window": { "width": 0, "height": 0 } }"#)
+            .expect("宽高为 0 也要能解析");
+        zeroed.sanitize();
+        assert_eq!(zeroed.window.width, defaults.width);
+        assert_eq!(zeroed.window.height, defaults.height);
+
+        let mut negative = parse_settings(br#"{ "window": { "width": -1, "height": -900.5 } }"#)
+            .expect("负数宽高不许让整份配置解析失败");
+        negative.sanitize();
+        assert_eq!(negative.window.width, defaults.width);
+        assert_eq!(negative.window.height, defaults.height);
+
+        let mut huge = parse_settings(br#"{ "window": { "width": 9e99, "height": 1e12 } }"#)
+            .expect("超大宽高同样不该炸");
+        huge.sanitize();
+        assert_eq!(huge.window.width, WINDOW_MAX_EDGE);
+        assert_eq!(huge.window.height, WINDOW_MAX_EDGE);
+    }
+
+    /// 坐标：null / 缺失 / 离谱值都退化为「无记录」，交启动逻辑居中。
+    #[test]
+    fn window_coordinates_degrade_to_none() {
+        let explicit_null =
+            parse_settings(br#"{ "window": { "x": null, "y": 12 } }"#).expect("null 坐标应能解析");
+        assert_eq!(explicit_null.window.x, None);
+        assert_eq!(explicit_null.window.y, Some(12));
+
+        let absurd = parse_settings(br#"{ "window": { "x": 999999999, "y": -999999999 } }"#)
+            .expect("离谱坐标应能解析");
+        assert_eq!(absurd.window.x, None);
+        assert_eq!(absurd.window.y, None);
+    }
+
+    /// 旧版本写下的 `showMetadata` 已被移除：读到只当未知字段忽略，
+    /// frontmatterDisplay 走默认值（真正的值迁移在前端 migrateSettings 里做）。
+    #[test]
+    fn ignores_legacy_show_metadata_field() {
+        let settings = parse_settings(br#"{ "showMetadata": false }"#).expect("旧字段应被忽略");
+        assert_eq!(settings.frontmatter_display, FrontmatterDisplay::Card);
     }
 
     /// 缺字段走 serde default，多余字段忽略——升级/降级都不该炸。

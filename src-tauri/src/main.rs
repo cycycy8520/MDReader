@@ -28,6 +28,15 @@ fn main() {
         // 以下插件之间彼此无序，只要都排在 single-instance 之后即可。
         .plugin(tauri_plugin_cli::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // opener：外链交系统浏览器 / 源文件交系统「打开方式」（UPGRADE_PLAN 1.1、3.3）。
+        // 前端经 src/services/ipc.ts 的 openExternal / openWithDefaultApp 调用官方 JS API，
+        // 不再自写 command——ShellExecute 的参数转义、UAC、UWP 目标都是插件已趟过的坑。
+        // 权限见 capabilities/default.json 的 opener:allow-open-url / allow-default-urls /
+        // allow-open-path（后者带路径 scope，只放行 Markdown 五扩展名）。
+        .plugin(tauri_plugin_opener::init())
+        // 导航守卫：主窗口除应用自身 origin 外一律 deny（1.1 的纵深防御）。
+        // 必须排在窗口创建之前注册——插件钩子在 webview 创建时被装上。
+        .plugin(mdnaonao_lib::navigation_guard())
         // dialog：Ctrl+O「打开文件」的文件选择框（M1 主链路入口之一）。
         // 只在前端经 src/services/ipc.ts 的 openFileDialog 调用；权限见
         // capabilities/default.json 的 dialog:allow-open（只放行 open，不放行 save/message）。
@@ -45,6 +54,7 @@ fn main() {
             mdnaonao_lib::files::remove_recent,
             mdnaonao_lib::files::set_recent_pinned,
             mdnaonao_lib::files::set_scroll_anchor,
+            mdnaonao_lib::files::probe_paths,
             mdnaonao_lib::files::reveal_in_explorer,
             mdnaonao_lib::files::watch_file,
             mdnaonao_lib::files::unwatch_file,

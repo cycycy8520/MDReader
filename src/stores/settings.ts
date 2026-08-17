@@ -241,6 +241,13 @@ export function applyThemeAttribute(theme: Theme): ResolvedTheme {
   return theme === "system" ? systemResolvedTheme() : theme;
 }
 
+let disposeSystemThemeWatch: (() => void) | null = null;
+
+/** 撤销系统深浅色监听（卸载时调用；未挂过则为 no-op） */
+export function stopSystemThemeWatch(): void {
+  disposeSystemThemeWatch?.();
+}
+
 /**
  * 系统深浅色监听（审计：theme==="system" 时运行中切系统主题，hljs/Mermaid 停在旧主题）。
  *
@@ -265,13 +272,6 @@ export function startSystemThemeWatch(): () => void {
     disposeSystemThemeWatch = null;
   };
   return stopSystemThemeWatch;
-}
-
-let disposeSystemThemeWatch: (() => void) | null = null;
-
-/** 撤销系统深浅色监听（卸载时调用；未挂过则为 no-op） */
-export function stopSystemThemeWatch(): void {
-  disposeSystemThemeWatch?.();
 }
 
 /* ── 排版变量（1.4：CSS 由样式代理消费，DOM 注入由 App 代理做） ── */
@@ -356,7 +356,8 @@ function persist(): void {
 export const useSettingsStore = create<SettingsState>()((set, get) => ({
   ...DEFAULT_SETTINGS,
   loaded: false,
-  resolvedTheme: "light",
+  // 初值直接读系统偏好，而不是硬编码——settings 加载完成前打开的文档不会先按错误主题渲染一遍
+  resolvedTheme: systemResolvedTheme(),
 
   load: async () => {
     let raw: unknown;

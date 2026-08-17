@@ -44,55 +44,55 @@
 
 > 目标：5 个 blocker 清零；"点了没反应 / 点了出事故"两类问题绝迹。
 
-### 1.1 链接点击委托 ⬜（blocker，1–2 天）
-- [ ] 阅读区 click/auxclick 事件委托，接管所有 `a[href]`
-- [ ] 外链 http(s)：preventDefault → tauri-plugin-opener 交系统浏览器（Rust 注册插件 + capabilities 最小权限；ipc.ts 加 `openExternal` 封装）
-- [ ] 相对路径 `.md/.markdown/...`（SUPPORTED_EXTENSIONS 命中）：以 baseDir 解析绝对路径 → `fileSession.openPath`；带 `#fragment` 时渲染 settled 后跳锚点
-- [ ] 文内 `#锚点`（含脚注/标题锚点/vditor-anchor）：统一走 `jumpToHeading`（平滑 250ms + 16px 留白 + 大纲高亮同步），不污染 history
-- [ ] 其余协议（file:/javascript: 等）一律 deny
-- [ ] Rust 侧 `on_navigation` 兜底：主窗口除自身 origin 外全部 deny（纵深防御，委托漏了也导航不走）
+### 1.1 链接点击委托 ✅ 2026-08-18（blocker，1–2 天）
+- [x] 阅读区 click/auxclick 事件委托，接管所有 `a[href]`
+- [x] 外链 http(s)：preventDefault → tauri-plugin-opener 交系统浏览器（Rust 注册插件 + capabilities 最小权限；ipc.ts 加 `openExternal` 封装）
+- [x] 相对路径 `.md/.markdown/...`（SUPPORTED_EXTENSIONS 命中）：以 baseDir 解析绝对路径 → `fileSession.openPath`；带 `#fragment` 时渲染 settled 后跳锚点
+- [x] 文内 `#锚点`（含脚注/标题锚点/vditor-anchor）：统一走 `jumpToHeading`（平滑 250ms + 16px 留白 + 大纲高亮同步），不污染 history
+- [x] 其余协议（file:/javascript: 等）一律 deny
+- [x] Rust 侧 `on_navigation` 兜底：主窗口除自身 origin 外全部 deny（纵深防御，委托漏了也导航不走）
 - 验收：点外链应用纹丝不动、系统浏览器打开；点相对 .md 在应用内打开并计入最近列表；Alt+← 无任何效果
 
-### 1.2 浏览器默认快捷键接管 ⬜（blocker，半天）
-- [ ] Rust `with_webview` 取 `ICoreWebView2Settings3`，`AreBrowserAcceleratorKeysEnabled = false`
-- [ ] 同时关 `IsZoomControlEnabled`（Ctrl+滚轮缩放整窗的根源）、`AreDefaultContextMenusEnabled = false`（浏览器右键菜单的根源，批次 3 的自绘菜单未到位前先保底屏蔽——正文选中复制走 Ctrl+C 不受影响）
-- [ ] 前端按 DG 6.5 白名单重新实现需要的键：Ctrl+R 映射为"重新渲染"（与 F5 同义）
+### 1.2 浏览器默认快捷键接管 ✅ 2026-08-18（blocker，半天）
+- [x] Rust `with_webview` 取 `ICoreWebView2Settings3`，`AreBrowserAcceleratorKeysEnabled = false`
+- [x] 同时关 `IsZoomControlEnabled`（Ctrl+滚轮缩放整窗的根源）、`AreDefaultContextMenusEnabled = false`（浏览器右键菜单的根源，批次 3 的自绘菜单未到位前先保底屏蔽——正文选中复制走 Ctrl+C 不受影响）
+- [x] 前端按 DG 6.5 白名单重新实现需要的键：Ctrl+R 映射为"重新渲染"（与 F5 同义）
 - 验收逐键清单：`Ctrl+R`（重渲染不丢文档）/ `F5`（同）/ `Ctrl+P`（无浏览器打印弹窗）/ `Ctrl+F`（无 WebView 查找条；批次 3 前无动作可接受）/ `Ctrl+U`、`F12`、`F3`、`Alt+←/→`、`Ctrl+L`（全部无效果）/ `Ctrl+C`（复制选中正常）
 
-### 1.3 settings 前后端契约修复 ⬜（blocker，半天）
-- [ ] 字段名以 Rust `settings::Settings` 为准，TS 类型与 store 逐字段对齐（当前对不上 → 保存即静默丢失，还会反向覆写）
-- [ ] 加前后端序列化对拍单测（Rust 侧 serde 快照 + TS 侧类型断言），锁死契约
+### 1.3 settings 前后端契约修复 ✅ 2026-08-18（blocker，半天）
+- [x] 字段名以 Rust `settings::Settings` 为准，TS 类型与 store 逐字段对齐（当前对不上 → 保存即静默丢失，还会反向覆写）
+- [x] 加前后端序列化对拍单测（Rust 侧 serde 快照 + TS 侧类型断言），锁死契约
 - 验收：改字号/主题/缩放 → 重启全部保留
 
-### 1.4 缩放与字号真正生效 ⬜（major，1 天）
-- [ ] `.md-content` 字号体系改为 `calc(var(--md-reading-font) * var(--md-zoom))`，标题行高改 em 比例字阶（settings 注入变量，即改即生效）
-- [ ] Ctrl+滚轮（阅读区内，preventDefault）→ setZoom ±10；`Ctrl+=`/`Ctrl+-`/`Ctrl+0` 三键
-- [ ] 状态栏 zoom% 按钮：点击弹档位菜单（90–150）
-- [ ] `codeWrap` 设置接线：容器 `data-code-wrap` 属性 + 一条 CSS 切 pre-wrap
+### 1.4 缩放与字号真正生效 ✅ 2026-08-18（major，1 天）
+- [x] `.md-content` 字号体系改为 `calc(var(--md-reading-font) * var(--md-zoom))`，标题行高改 em 比例字阶（settings 注入变量，即改即生效）
+- [x] Ctrl+滚轮（阅读区内，preventDefault）→ setZoom ±10；`Ctrl+=`/`Ctrl+-`/`Ctrl+0` 三键
+- [x] 状态栏 zoom% 按钮：点击弹档位菜单（90–150）
+- [x] `codeWrap` 设置接线：容器 `data-code-wrap` 属性 + 一条 CSS 切 pre-wrap
 - 验收：缩放对正文生效且顶栏/状态栏不变；重启保留
 
-### 1.5 主题链路补完 ⬜（major，小时级）
-- [ ] 状态栏月亮按钮接 `setTheme`（system→light→dark 循环，图标随态）
-- [ ] `theme===system` 时挂 `matchMedia('prefers-color-scheme')` change 监听：运行中系统切深浅，界面/hljs/Mermaid 全部跟随
+### 1.5 主题链路补完 ✅ 2026-08-18（major，小时级）
+- [x] 状态栏月亮按钮接 `setTheme`（system→light→dark 循环，图标随态）
+- [x] `theme===system` 时挂 `matchMedia('prefers-color-scheme')` change 监听：运行中系统切深浅，界面/hljs/Mermaid 全部跟随
 - 验收：白天开到晚上（模拟切系统主题），全界面即时切换
 
-### 1.6 死按钮清零 ⬜（major，小时级）
-- [ ] IconButton 加 `disabled` prop（opacity-40 + cursor-default + tooltip"开发中"）
-- [ ] 顶栏：查找（批次 3 点亮）/ 导出 / 分享（M2 点亮）→ disabled；"更多"若无内容先隐藏
+### 1.6 死按钮清零 ✅ 2026-08-18（major，小时级）
+- [x] IconButton 加 `disabled` prop（opacity-40 + cursor-default + tooltip"开发中"）
+- [x] 顶栏：查找（批次 3 点亮）/ 导出 / 分享（M2 点亮）→ disabled；"更多"若无内容先隐藏
 - 验收：界面上不存在任何"看起来能点、点了没反应"的元素
 
-### 1.7 焦点与键盘基础 ⬜（major，小时级 ×3）
-- [ ] 阅读区 main `tabIndex={-1}`，打开文档后 `focus()`；点击左栏后焦点归还阅读区 → PgDn/PgUp/Space/Home/End 原生翻页生效
-- [ ] Esc 语义链接线：过滤框有值→清空+失焦；否则 `closeTopLayer()`（现为死代码）
-- [ ] 点击已打开的当前文件 → no-op（不重读盘不归零滚动）
+### 1.7 焦点与键盘基础 ✅ 2026-08-18（major，小时级 ×3）
+- [x] 阅读区 main `tabIndex={-1}`，打开文档后 `focus()`；点击左栏后焦点归还阅读区 → PgDn/PgUp/Space/Home/End 原生翻页生效
+- [x] Esc 语义链接线：过滤框有值→清空+失焦；否则 `closeTopLayer()`（现为死代码）
+- [x] 点击已打开的当前文件 → no-op（不重读盘不归零滚动）
 - 验收：启动→打开文档→直接按 PgDn 就能翻页；Esc 按语义链逐层退
 
-### 1.8 断线小项打包 ⬜（major/minor，合计 1 天）
-- [ ] `file-removed` 前端订阅 → 顶栏 slide-down 警示条（正文保留；file-changed 恢复时自动撤条）
-- [ ] 失效路径灰显：后端加批量探测命令，load()/窗口 focus 时回填 missingPaths；失效条目点击给"从列表移除"出路
-- [ ] 代码块工具条 `select-none`（修"拖选正文粘出 python 复制"）
-- [ ] 错误态分档：编码失败给专属文案（"暂不支持 UTF-16，请转存 UTF-8"），隐藏无意义的重试
-- [ ] 拖入不支持类型：danger 遮罩 + 文案，不再静默
+### 1.8 断线小项打包 ✅ 2026-08-18（major/minor，合计 1 天）
+- [x] `file-removed` 前端订阅 → 顶栏 slide-down 警示条（正文保留；file-changed 恢复时自动撤条）
+- [x] 失效路径灰显：后端加批量探测命令，load()/窗口 focus 时回填 missingPaths；失效条目点击给"从列表移除"出路
+- [x] 代码块工具条 `select-none`（修"拖选正文粘出 python 复制"）
+- [x] 错误态分档：编码失败给专属文案（"暂不支持 UTF-16，请转存 UTF-8"），隐藏无意义的重试
+- [x] 拖入不支持类型：danger 遮罩 + 文案，不再静默
 
 **批次 1 出口自验**：1.1–1.8 全勾 + 第 1 节矩阵全过 + 安装包产出。
 
@@ -212,7 +212,7 @@
 
 | 批次 | 状态 | 开始 | 自验通过 | 用户验收 |
 |---|---|---|---|---|
-| 批次 1 驯服 WebView、接通断线 | ⬜ 待启动 | — | — | — |
+| 批次 1 驯服 WebView、接通断线 | ✅ 自验通过 | 2026-08-18 | 2026-08-18 | 待用户验收 |
 | 批次 2 阅读的连续性 | ⬜ | — | — | — |
 | 批次 3 查找 + 右键菜单 | ⬜ | — | — | — |
 | 批次 4 排版补完与打磨 | ⬜ | — | — | — |
