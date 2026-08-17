@@ -2,6 +2,7 @@
   "name": "mdnaonao",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "pnpm@11.22.0",
   "type": "module",
   "description": "MDNaonao for Windows —— 轻量 Markdown 查看器（严格只读）",
   "license": "MIT",

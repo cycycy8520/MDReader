@@ -24,7 +24,9 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: '20' # DG 4.1：Node 20+
+  # DG 4.1 要求 Node 20+；这里取 22（本机开发版本），与 runner 的 Node 24 运行时无关——
+  # 后者是 action 自身的执行环境，由 action 版本决定，与本项目构建用的 Node 无关。
+  NODE_VERSION: '22'
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: '1'
 
@@ -39,17 +41,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
-        # 刻意不写 version：版本由 package.json 的 "packageManager": "pnpm@x.y.z" 决定。
-        # 两处同时指定版本时该 action 会直接报冲突失败，所以只保留一个事实来源。
+        uses: pnpm/action-setup@v6
+        # 刻意不写 version：版本由 package.json 的 "packageManager": "pnpm@x.y.z" 决定
+        # （两处同时写会被该 action 判为冲突并直接失败，故只保留一个事实来源）。
+        # 前提：package.json 必须有 packageManager 字段，缺了就报
+        # "No pnpm version is specified"——CI #1–#5 正是栽在这里。
         with:
           run_install: false
 
       - name: 安装 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -77,15 +81,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           run_install: false
 
       - name: 安装 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -109,7 +113,7 @@ jobs:
           components: clippy
 
       - name: 缓存 cargo 目录
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -140,15 +144,15 @@ jobs:
     continue-on-error: true
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           run_install: false
 
       - name: 安装 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -164,7 +168,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: 缓存 cargo 目录
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -185,7 +189,7 @@ jobs:
 
       - name: 上传 NSIS 产物
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mdnaonao-nsis
           path: |

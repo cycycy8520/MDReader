@@ -1,0 +1,1281 @@
+<!doctype html>
+<!--
+  ============================================================================
+  MD Viewer / M0-① PDF 静默导出 PoC —— 打印基准页
+  ----------------------------------------------------------------------------
+  红线 8（零外网）：本文件不得出现任何 http(s):// 资源引用。
+  Mermaid 11.16.1 / KaTeX 0.16.9 均从 node_modules/vditor/dist/js/ 复制到
+  ./assets/ 下，全部相对路径引用。修改本文件前请先读 docs/m0/README.md。
+  ============================================================================
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M0-① 打印基准页 · PDF 静默导出验收</title>
+
+<!-- KaTeX 0.16.9：css 内部用相对路径 fonts/*.woff2，必须与 fonts/ 同目录 -->
+<link rel="stylesheet" href="assets/katex/katex.min.css">
+
+<style>
+/* ==========================================================================
+   1. 变量与基础排版
+   ========================================================================== */
+:root{
+  --ink:#1b1f24;
+  --ink-soft:#4a5158;
+  --line:#d5dae0;
+  --line-soft:#e8ecf0;
+  --bg:#ffffff;
+  --bg-soft:#f6f8fa;
+  --bg-code:#f6f8fa;
+  --accent:#0b62c4;
+  --warn-bg:#fff8e6;
+  --warn-line:#e6c86a;
+  --ok:#1a7f37;
+  --err:#b42318;
+
+  /* 中文正文字体栈：全部为 Windows 自带字体，不下载任何 webfont */
+  --font-cjk: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans CJK SC",
+              "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", "JetBrains Mono", "Sarasa Mono SC",
+               "Courier New", monospace;
+}
+
+*{box-sizing:border-box}
+html{ -webkit-text-size-adjust:100%; }
+body{
+  margin:0 auto;
+  padding:28px 32px 80px;
+  max-width:940px;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--font-cjk);
+  font-size:15px;
+  line-height:1.78;
+  /* 中英混排时给英文单词留出正常断行机会，同时允许中文任意换行 */
+  word-break:normal;
+  overflow-wrap:break-word;
+  text-rendering:optimizeLegibility;
+}
+
+h1,h2,h3,h4,h5,h6{
+  font-family:var(--font-cjk);
+  line-height:1.35;
+  margin:1.9em 0 .7em;
+  font-weight:700;
+  /* 标题不要成为一页的最后一行 */
+  break-after:avoid-page;
+  page-break-after:avoid;
+}
+h1{font-size:1.85em;margin-top:0;border-bottom:2px solid var(--line);padding-bottom:.35em}
+h2{font-size:1.42em;border-bottom:1px solid var(--line-soft);padding-bottom:.3em}
+h3{font-size:1.18em}
+h4{font-size:1.04em;color:var(--ink-soft)}
+h5{font-size:.98em;color:var(--ink-soft);font-weight:600}
+h6{font-size:.94em;color:var(--ink-soft);font-weight:600;letter-spacing:.02em}
+
+p{margin:.85em 0}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(11,98,196,.32)}
+hr{border:0;border-top:1px solid var(--line);margin:2.2em 0}
+small{font-size:.86em;color:var(--ink-soft)}
+
+ul,ol{margin:.8em 0;padding-left:1.9em}
+li{margin:.28em 0}
+li>ul,li>ol{margin:.25em 0}
+
+blockquote{
+  margin:1.1em 0;
+  padding:.55em 1.1em;
+  border-left:4px solid var(--line);
+  background:var(--bg-soft);
+  color:var(--ink-soft);
+}
+blockquote p{margin:.45em 0}
+
+code{
+  font-family:var(--font-mono);
+  font-size:.88em;
+  background:var(--bg-code);
+  border:1px solid var(--line-soft);
+  border-radius:3px;
+  padding:.1em .34em;
+}
+
+/* ==========================================================================
+   2. 代码块 —— 打印验收的核心样式
+   出口标准要求：white-space: pre-wrap; word-break: break-all 下超长行不截断
+   ========================================================================== */
+pre{
+  margin:1.1em 0;
+  padding:.85em 1em;
+  background:var(--bg-code);
+  border:1px solid var(--line);
+  border-radius:5px;
+  font-family:var(--font-mono);
+  font-size:12.5px;
+  line-height:1.62;
+  /* 关键：软换行 + 允许在任意字符处断开，否则超长无空格串会被裁掉 */
+  white-space:pre-wrap;
+  word-break:break-all;
+  overflow-wrap:anywhere;
+  tab-size:4;
+}
+pre code{
+  background:none;border:0;padding:0;font-size:inherit;border-radius:0;
+}
+/* 反面对照组：故意保留 pre + overflow-x，用来验证"会被截断"的失败形态 */
+pre.no-wrap{
+  white-space:pre;
+  word-break:normal;
+  overflow-wrap:normal;
+  overflow-x:auto;
+  background:#fff5f5;
+  border-color:#e6b0aa;
+}
+.code-label{
+  display:inline-block;
+  font-family:var(--font-mono);
+  font-size:11px;
+  letter-spacing:.04em;
+  color:var(--ink-soft);
+  background:var(--bg-soft);
+  border:1px solid var(--line);
+  border-bottom:0;
+  border-radius:4px 4px 0 0;
+  padding:.1em .6em;
+  margin-bottom:-1px;
+  position:relative;
+  z-index:1;
+}
+.code-label + pre{margin-top:0;border-top-left-radius:0}
+
+/* 手写着色 token：用于验证打印时是否保留前景色（不依赖 highlight.js） */
+.tok-kw{color:#a626a4;font-weight:600}
+.tok-str{color:#1a7f37}
+.tok-num{color:#b26b00}
+.tok-com{color:#8a9199;font-style:italic}
+.tok-fn{color:#0b62c4}
+
+/* ==========================================================================
+   3. 表格
+   ========================================================================== */
+.table-wrap{margin:1.1em 0;overflow-x:auto}
+table{
+  border-collapse:collapse;
+  font-size:13px;
+  line-height:1.55;
+  width:100%;
+}
+th,td{
+  border:1px solid var(--line);
+  padding:.4em .6em;
+  text-align:left;
+  vertical-align:top;
+}
+thead th{
+  background:var(--bg-soft);
+  font-weight:700;
+  white-space:nowrap;
+}
+tbody tr:nth-child(even) td{background:#fbfcfd}
+td.num{text-align:right;font-family:var(--font-mono);font-size:.94em}
+
+/* 超宽表：不做任何自适应，用来验证 PDF 右侧是否被裁 */
+table.overwide{width:auto;min-width:1180px;font-size:12px}
+table.overwide th,table.overwide td{white-space:nowrap}
+
+/* 缓解方案对照：固定布局 + 允许换行，验证"缩到 A4 内"是否可行 */
+table.fitted{table-layout:fixed;width:100%;font-size:11.5px}
+table.fitted th,table.fitted td{white-space:normal;word-break:break-all}
+
+/* 打印背景色策略对照组 */
+.color-exact{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.color-economy{-webkit-print-color-adjust:economy;print-color-adjust:economy}
+
+/* ==========================================================================
+   4. Mermaid / 图片 / 公式
+   ========================================================================== */
+figure{margin:1.4em 0;text-align:center}
+figcaption{
+  font-size:12.5px;color:var(--ink-soft);margin-top:.5em;text-align:center;
+}
+.mermaid{
+  margin:0;
+  text-align:center;
+  background:#fff;
+  min-height:40px;
+}
+/* mermaid 会在 <svg> 上写 inline max-width:<px>；这里用 !important 覆盖，
+   保证超宽图在 A4 内等比缩放而不是被裁。是否生效是 M0-① 的验收点之一。 */
+.mermaid svg{
+  max-width:100% !important;
+  height:auto !important;
+  display:block;
+  margin:0 auto;
+}
+/* 渲染完成前占位，避免"还没画就被打印"时看起来像空白页 */
+.mermaid:not([data-processed])::before{
+  content:"（Mermaid 尚未渲染 —— 若在 PDF 中看到这行字，说明打印早于 PRINT_READY）";
+  display:block;
+  color:var(--err);
+  font-size:12px;
+}
+
+img.demo{
+  border:1px solid var(--line);
+  border-radius:4px;
+  image-rendering:pixelated;
+  background:#fff;
+}
+svg.inline-fig{max-width:100%;height:auto;border:1px solid var(--line);border-radius:4px;background:#fff}
+
+.katex-display{margin:1.1em 0;overflow-x:auto;overflow-y:hidden}
+.math-block{margin:1.1em 0}
+
+/* ==========================================================================
+   5. 页面装饰块（说明块 / 状态徽标 / 清单）
+   ========================================================================== */
+.doc-intro{
+  border:1px solid var(--warn-line);
+  background:var(--warn-bg);
+  border-radius:6px;
+  padding:1em 1.2em;
+  margin:0 0 1.6em;
+  font-size:14px;
+  -webkit-print-color-adjust:exact;
+  print-color-adjust:exact;
+}
+.doc-intro h1{font-size:1.4em;border:0;padding:0;margin:0 0 .5em}
+.doc-intro ul{margin:.4em 0}
+.doc-intro .stamp{
+  margin-top:.9em;padding-top:.7em;border-top:1px dashed var(--warn-line);
+  font-family:var(--font-mono);font-size:11.5px;line-height:1.7;
+  color:var(--ink-soft);word-break:break-all;
+}
+
+#ready-badge{
+  position:fixed;
+  top:12px; right:12px;
+  z-index:9999;
+  font-family:var(--font-mono);
+  font-size:12px;
+  line-height:1.4;
+  padding:.45em .8em;
+  border-radius:999px;
+  border:1px solid #b9791f;
+  background:#fff3d6;
+  color:#7a4b06;
+  box-shadow:0 2px 8px rgba(0,0,0,.12);
+  user-select:none;
+  white-space:nowrap;
+}
+html[data-print-ready="true"] #ready-badge{
+  border-color:#1a7f37;background:#e6f6ea;color:#0f5c28;
+}
+html[data-print-ready="error"] #ready-badge{
+  border-color:#b42318;background:#fdecea;color:#8a1c14;
+}
+
+.checklist{border:1px solid var(--line);border-radius:6px;padding:.4em 1.1em;background:var(--bg-soft)}
+.note{font-size:13px;color:var(--ink-soft);margin:.5em 0 1.2em}
+.kbd{font-family:var(--font-mono);font-size:.85em;background:#eef1f4;border:1px solid var(--line);border-bottom-width:2px;border-radius:3px;padding:.05em .38em}
+.longurl{word-break:break-all}
+@media screen{ .print-only{display:none !important} }
+.specimen-tag{
+  display:inline-block;font-family:var(--font-mono);font-size:11px;
+  background:#eef4fb;color:#0b4d9c;border:1px solid #b9d4f2;border-radius:3px;
+  padding:.05em .45em;margin-right:.4em;
+}
+
+/* ==========================================================================
+   6. @media print —— A4 / 分页 / 断裂 / 链接 URL / 背景色
+   ========================================================================== */
+@page{
+  size:A4;
+  /* 上下留大一点，给 PrintToPdf 的页眉页脚（若开启）让位 */
+  margin:18mm 15mm 20mm;
+}
+
+@media print{
+  html,body{background:#fff}
+  body{
+    max-width:none;
+    margin:0;
+    padding:0;
+    font-size:10.5pt;
+    line-height:1.72;
+  }
+
+  /* 屏幕专用元素在 PDF 中隐藏；position:fixed 在 Chromium 打印时会逐页重复 */
+  #ready-badge, .screen-only{display:none !important}
+  .print-only{display:revert !important}
+
+  /* --- 断裂控制 --------------------------------------------------------- */
+  /* 默认：小块尽量不跨页 */
+  pre, blockquote, figure, .mermaid, .code-label{
+    break-inside:avoid;
+    page-break-inside:avoid;
+  }
+  .code-label{break-after:avoid;page-break-after:avoid}
+  h1,h2,h3,h4,h5,h6{break-after:avoid;page-break-after:avoid}
+  /* 孤行寡行控制：Chromium 支持 orphans/widows */
+  p,li,blockquote{orphans:3;widows:3}
+
+  /* 显式标记为"允许跨页"的标本：验证超长块的降级行为 */
+  .allow-break, .allow-break pre, pre.allow-break{
+    break-inside:auto !important;
+    page-break-inside:auto !important;
+  }
+  /* 强制分页标本 */
+  .page-break-before{break-before:page;page-break-before:always}
+
+  /* --- 表格 ------------------------------------------------------------- */
+  .table-wrap{overflow:visible !important}
+  table{break-inside:auto;page-break-inside:auto}
+  thead{display:table-header-group}   /* 跨页时表头逐页重复 */
+  tfoot{display:table-footer-group}
+  tr{break-inside:avoid;page-break-inside:avoid}
+  /* 超宽表在 A4 上必然溢出 —— 保留原样以便观察裁切边界，不做隐藏 */
+  table.overwide{overflow:visible}
+
+  /* --- 链接 URL 策略 ---------------------------------------------------- */
+  /* 决策：仅对站外/文件外链接追加 URL；页内锚点、以及标注 .no-url 的不追加，
+     否则目录、脚注区会被 (#anchor) 噪音塞满。 */
+  a[href^="http"]::after,
+  a[href^="file"]::after{
+    content:" [" attr(href) "]";
+    font-size:.82em;
+    color:#5a6672;
+    word-break:break-all;
+  }
+  a[href^="#"]::after,
+  a.no-url::after{content:"" !important}
+  a{border-bottom:0;color:#0b4d9c}
+
+  /* --- 背景色策略 -------------------------------------------------------- */
+  /* 默认让浏览器决定（economy）；对"必须保留底色"的元素显式 exact。
+     真正是否打印背景还取决于 WebView2 的 ShouldPrintBackgrounds 设置，
+     两处开关的交互结果是本页要验的点之一。 */
+  pre, .doc-intro, thead th, .checklist, .color-exact, .color-exact *{
+    -webkit-print-color-adjust:exact;
+    print-color-adjust:exact;
+  }
+
+  /* Mermaid 图在打印时保证等比缩放不裁边 */
+  .mermaid svg{max-width:100% !important;height:auto !important}
+}
+</style>
+</head>
+
+<body>
+
+<!-- ======================= 状态徽标（屏幕专用） ======================= -->
+<div id="ready-badge" role="status" aria-live="polite" title="PRINT_READY 信号状态">渲染中…</div>
+
+<!-- ======================= 顶部说明块 ======================= -->
+<header class="doc-intro">
+  <h1>M0-① 打印基准页 · PDF 静默导出验收</h1>
+
+  <p><strong>这是什么。</strong>这是 MD Viewer 里程碑 M0 第①张任务卡（<em>不弹对话框、静默导出 PDF</em>）的<strong>验收基准物</strong>，
+  不是渲染管线的产物（那是 M0-② 的事）。它是一张静态、完全离线、内容刻意"难打印"的 HTML，
+  用同一份输入去跑<strong>主路线</strong>（WebView2 <code>ICoreWebView2_7::PrintToPdf</code>）与
+  <strong>兜底 A</strong>（CDP 驱动 <code>msedge.exe --headless</code> 的 <code>Page.printToPDF</code>），
+  两份 PDF 应当逐项可比。</p>
+
+  <p><strong>验收哪些点。</strong></p>
+  <ul>
+    <li>中文正文（含全角标点、中英混排、数字单位）字体嵌入是否正常，有无豆腐块／乱码；</li>
+    <li>超宽表格（10 列 / 12 列）在 A4 上是被<strong>裁掉</strong>还是被<strong>缩放</strong>；长表跨页时 <code>thead</code> 是否逐页重复；</li>
+    <li>超长无空格代码行在 <code>white-space:pre-wrap; word-break:break-all</code> 下是否完整折行；对照组 <code>white-space:pre</code> 是否如预期被截断；</li>
+    <li>Mermaid 流程图 + 时序图在 PDF 中是<strong>矢量</strong>还是被栅格化，放大到 400% 是否仍然清晰；</li>
+    <li>KaTeX 行内／块级公式的符号字体是否嵌入（KaTeX 用的是自带 woff2，最容易掉字）；</li>
+    <li>分页行为：<code>break-inside:avoid</code> 是否生效、超过一页高的块如何降级、强制分页是否准确；</li>
+    <li>背景色与前景色：CSS <code>print-color-adjust</code> 与 WebView2 <code>ShouldPrintBackgrounds</code> 两个开关谁说了算；</li>
+    <li>链接 URL 追加策略是否符合预期（仅站外链接追加，页内锚点不追加）。</li>
+  </ul>
+
+  <p><strong>怎么用。</strong></p>
+  <ol>
+    <li><strong>人工核对</strong>：资源管理器里双击本文件用 Edge 打开，等右上角徽标从"渲染中…"变成"就绪"，再按
+      <span class="kbd">Ctrl</span>+<span class="kbd">P</span> 另存为 PDF，作为人眼基线；</li>
+    <li><strong>主路线</strong>：Rust 用隐藏 WebView2 加载本文件，<strong>轮询 <code>window.__PRINT_READY__ === true</code></strong>
+      （或接收下文四路信号任一路）之后再调 <code>PrintToPdf</code>；</li>
+    <li><strong>兜底 A</strong>：<code>msedge.exe --headless=new --remote-debugging-port=&lt;port&gt;</code> 打开本文件，
+      通过 CDP <code>Runtime.evaluate</code> 轮询同一个标志位，再发 <code>Page.printToPDF</code>。</li>
+  </ol>
+
+  <p><strong>就绪信号（四路，同时发）。</strong>页面在 <em>KaTeX 渲染完 → Mermaid 全部 <code>run()</code> 完 →
+  图片 decode 完 → <code>document.fonts.ready</code> 兑现</em> 之后才置位：</p>
+  <ul>
+    <li><code>window.__PRINT_READY__ = true</code>（<strong>最可靠，宿主应以它为准</strong>；失败时另有 <code>window.__PRINT_ERROR__</code>）；</li>
+    <li><code>document.dispatchEvent(new Event('print-ready'))</code>（页内订阅用）；</li>
+    <li>Tauri 环境：<code>emit('PRINT_READY', payload)</code>（有 <code>__TAURI__</code> 走全局 API，否则走 <code>__TAURI_INTERNALS__.invoke('plugin:event|emit')</code>）；</li>
+    <li>裸 WebView2 宿主（无 Tauri 时才发，避免污染 wry 的 IPC 通道）：<code>window.chrome.webview.postMessage(JSON…)</code>。</li>
+  </ul>
+  <p>另有 <code>window.__PRINT_TIMING__</code>（各阶段耗时，毫秒）与 <code>window.__PRINT_ENV__</code>（UA / DPR / 离线自检结果）供报告取数。
+  <strong>看门狗</strong>：25 秒内未就绪则强制置位并写入 <code>__PRINT_ERROR__</code>，宁可出一份带错误标记的 PDF，也不要让宿主卡死。</p>
+
+  <div class="stamp" id="env-stamp">环境戳：等待脚本写入…（若 PDF 里这行仍是这句话，说明打印发生在脚本执行之前）</div>
+</header>
+
+<main>
+
+<!-- ============================================================ -->
+<h2 id="s1">一、中文正文与中英混排</h2>
+
+<p>MD Viewer 是一款<strong>严格只读</strong>的 Windows 轻量 Markdown 查看器，定位是"双击即开"。
+本节的作用是给 PDF 提供足够密度的中文正文，用来检查字体子集嵌入：如果 PrintToPdf 没有把
+<em>Microsoft YaHei</em> 的字形子集嵌进去，这一段在别人的机器上打开就会变成方块。
+请重点看以下几类字符：全角标点「，。；：？！」、括号（圆括号）［方括号］、
+书名号《开发指南》、省略号……、破折号——以及连续引号"内层引号"的收尾。</p>
+
+<p>中英混排是另一个常见翻车点。示例：本项目使用 <strong>Tauri 2.11.5</strong> 作为壳，
+渲染层是 <strong>React 18</strong> + <strong>Vite</strong>，Markdown 渲染走 <code>Vditor.preview()</code>，
+底层 WebView 由 <code>wry 0.55.1</code> 经 <code>webview2-com 0.38.2</code> 绑定到
+<code>windows 0.61.3</code>。数字与单位混排：首屏 ≤ 1s、10 MB 语料、内存 ≤ 300 MB、
+滚动 ≥ 50 FPS、PDF 页边距 15–18 mm、缩放 100 %。注意 <code>≤</code>、<code>≥</code>、<code>–</code>（en dash）、
+<code>—</code>（em dash）、<code>×</code>、<code>±</code>、<code>°</code>、<code>§</code> 这些符号是否都有字形。</p>
+
+<p>再来一段偏长的说明性文字，用于观察行距、段间距与两端对齐（本页<strong>不</strong>启用
+<code>text-align: justify</code>，因为 Chromium 的中文两端对齐在打印时容易产生过大的字间空隙，
+这是本页的一个明确决策，若后续渲染管线要开启，需要在 M1 重新验一遍）。
+段落里插入一个较长的英文技术名词序列以测试断词：
+<em>ICoreWebView2PrintSettings</em>、<em>CoreWebView2CreationProperties</em>、
+<em>add_WebMessageReceived</em>、<em>ExecuteScriptWithResultAsync</em>、
+<em>captureBeyondViewport</em>。这些词都超过 20 个字符且不含连字符，
+如果排版引擎不允许在词中断行，行尾就会出现明显的空洞。</p>
+
+<h3 id="s1-2">1.1 多级标题层次演示</h3>
+<h4>1.1.1 四级标题：验证字号与上下间距</h4>
+<h5>1.1.1.1 五级标题：常见于长文档的细分小节</h5>
+<h6>1.1.1.1.1 六级标题：极限层级，主要看是否还与正文可区分</h6>
+<p>上面五级标题连续出现时，<code>break-after:avoid</code> 会把它们和后面的段落粘在一起。
+如果 PDF 里出现"标题在上一页页脚、正文在下一页页首"的情况，说明该规则未生效，需要记进报告。</p>
+
+<h3 id="s1-3">1.2 列表、引用与水平线</h3>
+
+<p>无序列表（含三层嵌套与中英混排项）：</p>
+<ul>
+  <li>渲染层
+    <ul>
+      <li>Vditor <code>preview()</code>
+        <ul>
+          <li>代码高亮：highlight.js（本地）</li>
+          <li>数学公式：KaTeX 0.16.9（本地）</li>
+          <li>图表：Mermaid 11.16.1（本地）</li>
+        </ul>
+      </li>
+      <li>大纲：<code>outlineRender</code></li>
+    </ul>
+  </li>
+  <li>导出层
+    <ul>
+      <li>PDF：<code>PrintToPdf</code>（主路线） / CDP <code>Page.printToPDF</code>（兜底 A）</li>
+      <li>HTML：内联样式，供公众号 / 飞书粘贴</li>
+      <li>长图：CDP <code>captureBeyondViewport: true</code></li>
+    </ul>
+  </li>
+  <li>系统层：文件关联、single-instance 路由、<code>--action</code> 无 UI 直跑</li>
+</ul>
+
+<p>有序列表（验证编号对齐与跨页时编号是否延续）：</p>
+<ol>
+  <li>加载 HTML 到隐藏 WebView2；</li>
+  <li>轮询 <code>window.__PRINT_READY__</code>，超时上限 30 s；</li>
+  <li>构造 <code>ICoreWebView2PrintSettings</code>：A4、纵向、缩放 1.0、页边距按 CSS <code>@page</code> 让位；</li>
+  <li>调用 <code>PrintToPdf(path, settings, handler)</code>；</li>
+  <li>在回调里校验 <code>isSuccessful</code>，随后销毁 WebView 与其用户数据目录；</li>
+  <li>把耗时、页数、文件字节数写进 <code>docs/m0/m0-1-pdf-poc.md</code>。</li>
+</ol>
+
+<blockquote>
+  <p><strong>引用块（一级）。</strong>出口标准原文：主路线与兜底 A <em>各出一份</em> A4 PDF，
+  中文不乱码、宽表格完整、长代码块不截断、Mermaid 清晰；记录耗时与失败模式。</p>
+  <blockquote>
+    <p><strong>嵌套引用（二级）。</strong>若主路线自 DG 9.2 置 🔄 起 3 个工作日仍未通，
+    按 AI_DEV_GUIDE 第 9 节格式上报人类，由人类决定是否降级为系统打印对话框方案。</p>
+  </blockquote>
+</blockquote>
+
+<hr>
+
+<p>上面是一条水平线（<code>&lt;hr&gt;</code>）。在 PDF 里要确认它没有被当作分页锚点，
+也没有因为 <code>border</code> 太细而在某些缩放下消失。</p>
+
+<!-- ============================================================ -->
+<h2 id="s2">二、表格：超宽 / 跨页 / 背景色</h2>
+
+<h3 id="s2-1">2.1 标本 T-A：10 列常规宽度（应当完整落在 A4 内）</h3>
+<p class="note"><span class="specimen-tag">T-A</span>
+期望：10 列全部可见，无右侧裁切；表头灰底是否打印取决于背景色开关（本表使用 <code>print-color-adjust: exact</code>）。</p>
+
+<div class="table-wrap">
+<table class="color-exact">
+  <thead>
+    <tr>
+      <th>序号</th><th>模块</th><th>负责链路</th><th>输入</th><th>输出</th>
+      <th>目标耗时</th><th>内存上限</th><th>失败模式</th><th>兜底</th><th>状态</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td class="num">1</td><td>文件读取</td><td>fs::read_to_string</td><td>.md 路径</td><td>UTF-8 文本</td><td class="num">≤50 ms</td><td class="num">—</td><td>编码探测失败</td><td>按 GBK 重试</td><td>待验</td></tr>
+    <tr><td class="num">2</td><td>渲染</td><td>Vditor.preview</td><td>Markdown</td><td>DOM</td><td class="num">≤1 s</td><td class="num">300 MB</td><td>大表卡顿</td><td>虚拟滚动</td><td>M0-②</td></tr>
+    <tr><td class="num">3</td><td>大纲</td><td>outlineRender</td><td>DOM</td><td>标题树</td><td class="num">≤80 ms</td><td class="num">—</td><td>重复锚点</td><td>加序号后缀</td><td>M0-②</td></tr>
+    <tr><td class="num">4</td><td>PDF 主路线</td><td>PrintToPdf</td><td>HTML</td><td>A4 PDF</td><td class="num">≤3 s</td><td class="num">400 MB</td><td>句柄未就绪</td><td>重试三次</td><td><strong>M0-①</strong></td></tr>
+    <tr><td class="num">5</td><td>PDF 兜底 A</td><td>CDP printToPDF</td><td>HTML</td><td>A4 PDF</td><td class="num">≤5 s</td><td class="num">500 MB</td><td>端口被占</td><td>随机端口</td><td><strong>M0-①</strong></td></tr>
+    <tr><td class="num">6</td><td>剪贴板</td><td>write_html</td><td>DOM</td><td>CF_HTML</td><td class="num">≤200 ms</td><td class="num">—</td><td>样式丢失</td><td>内联化</td><td>M0-③</td></tr>
+    <tr><td class="num">7</td><td>长图</td><td>captureBeyondViewport</td><td>DOM</td><td>PNG</td><td class="num">≤4 s</td><td class="num">600 MB</td><td>&gt;16384 px</td><td>分段拼接</td><td>M0-②</td></tr>
+    <tr><td class="num">8</td><td>文件关联</td><td>NSIS hooks</td><td>安装事件</td><td>注册表项</td><td class="num">—</td><td class="num">—</td><td>卸载残留</td><td>回落默认</td><td>M0-④</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="s2-2">2.2 标本 T-B：12 列超宽表（<strong>预期溢出</strong>，用来看裁切边界）</h3>
+<p class="note"><span class="specimen-tag">T-B</span>
+期望：本表最小宽度 1180 px，A4 纵向可用宽度约 180 mm ≈ 680 px。屏幕上可横向滚动；
+打印时 <code>.table-wrap</code> 的 <code>overflow</code> 被改成 <code>visible</code>。
+<strong>要记录的是</strong>：PDF 里右侧是被硬裁（丢列）、还是整页被自动缩放（保列）。
+两条路线（PrintToPdf / CDP）在这里的行为差异是本卡最值得写进报告的一条。</p>
+
+<div class="table-wrap">
+<table class="overwide color-economy">
+  <thead>
+    <tr>
+      <th>#</th><th>任务卡编号</th><th>中文名称</th><th>英文代号</th><th>对齐需求</th>
+      <th>预算（人日）</th><th>风险等级</th><th>依赖前置</th><th>产出物路径</th>
+      <th>验收人</th><th>计划完成日</th><th>备注（较长文本列）</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td class="num">1</td><td>M0-①</td><td>PDF 静默导出 PoC</td><td>silent-pdf-export</td><td>FR-31 / DG 12</td><td class="num">3–5</td><td>最高</td><td>M0-0 脚手架</td><td>docs/m0/m0-1-pdf-poc.md</td><td>人类</td><td>2026-08-24</td><td>主路线卡满三日即上报，不得静默降级</td></tr>
+    <tr><td class="num">2</td><td>M0-②</td><td>Vditor 实测包</td><td>vditor-bench</td><td>FR-02 / DG 3.2</td><td class="num">3–4</td><td>高</td><td>M0-0</td><td>docs/m0/m0-2-vditor.md</td><td>人类</td><td>2026-08-28</td><td>含本地图片方案定案，asset 协议对比 data URL</td></tr>
+    <tr><td class="num">3</td><td>M0-③</td><td>剪贴板保真实测</td><td>clipboard-fidelity</td><td>FR-24</td><td class="num">1–2</td><td>中</td><td>M0-②</td><td>docs/m0/m0-3-clipboard.md</td><td>人类真机</td><td>2026-08-30</td><td>公众号与飞书各一份八项核对表</td></tr>
+    <tr><td class="num">4</td><td>M0-④</td><td>集成冒烟</td><td>integration-smoke</td><td>FR-01 / FR-40</td><td class="num">0.5</td><td>低</td><td>M0-0</td><td>docs/m0/m0-4-integration-smoke.md</td><td>人类</td><td>2026-08-31</td><td>装包会真实改动 .md 关联，须在虚拟机执行</td></tr>
+    <tr><td class="num">5</td><td>M1-①</td><td>只读渲染主界面</td><td>reader-shell</td><td>FR-02 / FR-05</td><td class="num">5</td><td>中</td><td>M0 出口</td><td>src/features/reader</td><td>AI</td><td>2026-09-08</td><td>依赖 M0-② 的方案定案，不可提前动工</td></tr>
+    <tr><td class="num">6</td><td>M1-②</td><td>大纲与目录跳转</td><td>outline-nav</td><td>FR-06</td><td class="num">2</td><td>低</td><td>M1-①</td><td>src/features/outline</td><td>AI</td><td>2026-09-11</td><td>锚点重名需加序号后缀，见 DG 8.3</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="s2-3">2.3 标本 T-C：同样 12 列，但施加"缩到 A4"的缓解方案</h3>
+<p class="note"><span class="specimen-tag">T-C</span>
+<code>table-layout: fixed; width: 100%; word-break: break-all; font-size: 11.5px</code>。
+期望：全部 12 列都在纸面内，代价是行高变大、中文列被强行断行。
+若 T-B 在 PDF 中确实丢列，则 T-C 就是 M1 导出管线要采用的默认表格策略。</p>
+
+<div class="table-wrap">
+<table class="fitted color-exact">
+  <thead>
+    <tr>
+      <th>#</th><th>任务卡</th><th>中文名称</th><th>英文代号</th><th>对齐需求</th>
+      <th>预算</th><th>风险</th><th>前置</th><th>产出物</th><th>验收</th><th>完成日</th><th>备注</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td class="num">1</td><td>M0-①</td><td>PDF 静默导出 PoC</td><td>silent-pdf-export</td><td>FR-31 / DG 12</td><td class="num">3–5</td><td>最高</td><td>M0-0</td><td>docs/m0/m0-1-pdf-poc.md</td><td>人类</td><td>08-24</td><td>主路线卡满三日即上报</td></tr>
+    <tr><td class="num">2</td><td>M0-②</td><td>Vditor 实测包</td><td>vditor-bench</td><td>FR-02 / DG 3.2</td><td class="num">3–4</td><td>高</td><td>M0-0</td><td>docs/m0/m0-2-vditor.md</td><td>人类</td><td>08-28</td><td>本地图片方案定案</td></tr>
+    <tr><td class="num">3</td><td>M0-③</td><td>剪贴板保真实测</td><td>clipboard-fidelity</td><td>FR-24</td><td class="num">1–2</td><td>中</td><td>M0-②</td><td>docs/m0/m0-3-clipboard.md</td><td>人类真机</td><td>08-30</td><td>八项样式核对表</td></tr>
+    <tr><td class="num">4</td><td>M0-④</td><td>集成冒烟</td><td>integration-smoke</td><td>FR-01 / FR-40</td><td class="num">0.5</td><td>低</td><td>M0-0</td><td>docs/m0/m0-4-integration-smoke.md</td><td>人类</td><td>08-31</td><td>虚拟机执行</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="s2-4">2.4 标本 T-D：长表跨页（验证 <code>thead</code> 逐页重复）</h3>
+<p class="note"><span class="specimen-tag">T-D</span>
+本表 34 行，必然跨页。期望：<code>thead{display:table-header-group}</code> 让"序号 / 校验项 / 期望 / 实测 / 判定"表头在每一页顶部重复出现；
+<code>tr{break-inside:avoid}</code> 让单行不被撕成两半。若表头只在第一页出现，需要在报告里标为未达标并给出替代方案。</p>
+
+<div class="table-wrap">
+<table class="color-exact" id="t-d">
+  <thead>
+    <tr><th style="width:3.4em">序号</th><th>校验项</th><th>期望结果</th><th style="width:7em">实测（人工填）</th><th style="width:4.2em">判定</th></tr>
+  </thead>
+  <tbody id="t-d-body">
+    <!-- 由脚本填充 34 行，避免手写冗长；填充在 PRINT_READY 之前同步完成 -->
+  </tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s3" class="page-break-before">三、代码块：超长行、多语言、跨页</h2>
+
+<p>本节起始处施加了 <code>break-before: page</code>，因此在 PDF 中<strong>本标题必须出现在新的一页顶部</strong>。
+如果它没有另起一页，说明强制分页规则未被采纳，记进报告。</p>
+
+<h3 id="s3-1">3.1 标本 C-A：超长无空格行（<code>pre-wrap</code> + <code>break-all</code>，期望完整折行）</h3>
+<p class="note"><span class="specimen-tag">C-A</span>
+下面第一行是一个 <strong>640 字符、不含任何空格</strong>的连续串（模拟 base64 / 长 token / 长哈希）。
+期望：在 PDF 中折成多行且<strong>一个字符都不丢</strong>。核对办法：数尾部的 <code>&lt;END-C-A&gt;</code> 标记是否可见。</p>
+
+<span class="code-label">text · 640 chars, no whitespace</span>
+<pre><code>QkVHSU4tQy1BLS0tMDEyMzQ1Njc4OWFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXpBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWjAxMjM0NTY3ODlhYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ekFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaMDEyMzQ1Njc4OWFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXpBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWjAxMjM0NTY3ODlhYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ekFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaMDEyMzQ1Njc4OWFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6&lt;END-C-A&gt;
+另一类超长行：Windows 深路径 + 中文目录名 + 空格，验证路径类文本的断行位置
+C:\Users\MSN\AppData\Local\Programs\MD Viewer\resources\语料库\性能压测\10MB-中文长文档-含大量表格与代码块-v3-final-真的最终版.md
+再一类：单行 SQL，含长标识符但有空格，期望在空格处优先断行
+SELECT export_task_id, source_document_path, rendered_html_byte_length, pdf_page_count, print_to_pdf_elapsed_milliseconds, cdp_fallback_elapsed_milliseconds FROM m0_pdf_benchmark WHERE route IN ('print_to_pdf','cdp_headless') AND created_at &gt;= '2026-08-17' ORDER BY pdf_page_count DESC, print_to_pdf_elapsed_milliseconds ASC;</code></pre>
+
+<h3 id="s3-2">3.2 标本 C-B：反面对照（<code>white-space: pre</code>，<strong>期望被截断</strong>）</h3>
+<p class="note"><span class="specimen-tag">C-B</span>
+这块<strong>故意</strong>不折行。如果 PDF 里能看到行尾的 <code>&lt;END-C-B&gt;</code>，说明打印引擎对溢出内容做了整页缩放；
+如果看不到，说明溢出内容被硬裁——这正是 M1 导出管线<strong>必须</strong>强制 <code>pre-wrap</code> 的依据。</p>
+
+<span class="code-label">text · white-space: pre（对照组）</span>
+<pre class="no-wrap"><code>BEGIN-C-B|0123456789|0123456789|0123456789|0123456789|0123456789|0123456789|0123456789|0123456789|0123456789|0123456789|0123456789|0123456789|0123456789|0123456789|0123456789|0123456789|&lt;END-C-B&gt;</code></pre>
+
+<h3 id="s3-3">3.3 多语言代码块</h3>
+
+<span class="code-label">rust · src-tauri/src/pdf/print_to_pdf.rs（示意）</span>
+<pre><code><span class="tok-com">// 主路线：在隐藏 WebView2 上等待 PRINT_READY 后再 PrintToPdf</span>
+<span class="tok-kw">use</span> webview2_com::{PrintToPdfCompletedHandler, ExecuteScriptCompletedHandler};
+<span class="tok-kw">use</span> windows::core::{Interface, HSTRING, PWSTR};
+
+<span class="tok-kw">pub async fn</span> <span class="tok-fn">export_pdf</span>(webview: &amp;ICoreWebView2_7, out: &amp;<span class="tok-kw">str</span>) -&gt; Result&lt;()&gt; {
+    <span class="tok-com">// 1) 轮询页面标志位，最长 30s，每 100ms 一次</span>
+    <span class="tok-kw">let</span> deadline = Instant::now() + Duration::from_secs(<span class="tok-num">30</span>);
+    <span class="tok-kw">loop</span> {
+        <span class="tok-kw">let</span> raw = exec_script(webview, <span class="tok-str">"JSON.stringify({r:!!window.__PRINT_READY__,e:window.__PRINT_ERROR__||null})"</span>).<span class="tok-kw">await</span>?;
+        <span class="tok-kw">if</span> raw.contains(<span class="tok-str">"\"r\":true"</span>) { <span class="tok-kw">break</span>; }
+        <span class="tok-kw">if</span> Instant::now() &gt; deadline { <span class="tok-kw">return</span> Err(anyhow!(<span class="tok-str">"PRINT_READY 超时"</span>)); }
+        tokio::time::sleep(Duration::from_millis(<span class="tok-num">100</span>)).<span class="tok-kw">await</span>;
+    }
+    <span class="tok-com">// 2) A4 / 纵向 / 缩放 1.0 / 不打页眉页脚；页边距交给 CSS @page</span>
+    <span class="tok-kw">let</span> settings = webview.Environment()?.CreatePrintSettings()?;
+    settings.SetOrientation(COREWEBVIEW2_PRINT_ORIENTATION_PORTRAIT)?;
+    settings.SetPageWidth(<span class="tok-num">8.27</span>)?;   <span class="tok-com">// A4 宽，单位英寸</span>
+    settings.SetPageHeight(<span class="tok-num">11.69</span>)?;  <span class="tok-com">// A4 高</span>
+    settings.SetScaleFactor(<span class="tok-num">1.0</span>)?;
+    settings.SetShouldPrintBackgrounds(<span class="tok-kw">true</span>)?;
+    settings.SetShouldPrintHeaderAndFooter(<span class="tok-kw">false</span>)?;
+    <span class="tok-fn">print_to_pdf</span>(webview, out, &amp;settings).<span class="tok-kw">await</span>
+}</code></pre>
+
+<span class="code-label">typescript · src/features/export/pdf.ts（示意）</span>
+<pre><code><span class="tok-kw">import</span> { invoke } <span class="tok-kw">from</span> <span class="tok-str">'@tauri-apps/api/core'</span>;
+
+<span class="tok-kw">export interface</span> PdfExportResult {
+  readonly path: <span class="tok-kw">string</span>;
+  readonly pageCount: <span class="tok-kw">number</span>;
+  readonly elapsedMs: <span class="tok-kw">number</span>;
+  readonly route: <span class="tok-str">'print_to_pdf'</span> | <span class="tok-str">'cdp_headless'</span>;
+}
+
+<span class="tok-kw">export async function</span> <span class="tok-fn">exportPdf</span>(source: <span class="tok-kw">string</span>, target: <span class="tok-kw">string</span>): Promise&lt;PdfExportResult&gt; {
+  <span class="tok-kw">const</span> started = performance.now();
+  <span class="tok-kw">const</span> result = <span class="tok-kw">await</span> invoke&lt;PdfExportResult&gt;(<span class="tok-str">'export_pdf'</span>, { source, target });
+  console.info(<span class="tok-str">`[pdf] ${result.route} -&gt; ${result.pageCount}p in ${Math.round(performance.now() - started)}ms`</span>);
+  <span class="tok-kw">return</span> result;
+}</code></pre>
+
+<span class="code-label">python · 兜底 A 的 CDP 驱动脚本（示意）</span>
+<pre><code><span class="tok-kw">import</span> json, base64, time, websocket, urllib.request
+
+EDGE = <span class="tok-str">r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"</span>
+
+<span class="tok-kw">def</span> <span class="tok-fn">wait_ready</span>(ws, timeout=<span class="tok-num">30.0</span>):
+    <span class="tok-str">"""轮询 window.__PRINT_READY__；返回 (ready, error, timing)"""</span>
+    deadline = time.time() + timeout
+    <span class="tok-kw">while</span> time.time() &lt; deadline:
+        ws.send(json.dumps({<span class="tok-str">"id"</span>: <span class="tok-num">1</span>, <span class="tok-str">"method"</span>: <span class="tok-str">"Runtime.evaluate"</span>, <span class="tok-str">"params"</span>: {
+            <span class="tok-str">"expression"</span>: <span class="tok-str">"JSON.stringify({r:!!window.__PRINT_READY__,e:window.__PRINT_ERROR__,t:window.__PRINT_TIMING__})"</span>,
+            <span class="tok-str">"returnByValue"</span>: <span class="tok-kw">True</span>}}))
+        payload = json.loads(json.loads(ws.recv())[<span class="tok-str">"result"</span>][<span class="tok-str">"result"</span>][<span class="tok-str">"value"</span>])
+        <span class="tok-kw">if</span> payload[<span class="tok-str">"r"</span>]:
+            <span class="tok-kw">return</span> <span class="tok-kw">True</span>, payload[<span class="tok-str">"e"</span>], payload[<span class="tok-str">"t"</span>]
+        time.sleep(<span class="tok-num">0.1</span>)
+    <span class="tok-kw">raise</span> TimeoutError(<span class="tok-str">"PRINT_READY 未在 %.1fs 内置位"</span> % timeout)</code></pre>
+
+<span class="code-label">json · CDP Page.printToPDF 参数（与主路线保持一致）</span>
+<pre><code>{
+  <span class="tok-str">"landscape"</span>: <span class="tok-kw">false</span>,
+  <span class="tok-str">"displayHeaderFooter"</span>: <span class="tok-kw">false</span>,
+  <span class="tok-str">"printBackground"</span>: <span class="tok-kw">true</span>,
+  <span class="tok-str">"scale"</span>: <span class="tok-num">1.0</span>,
+  <span class="tok-str">"paperWidth"</span>: <span class="tok-num">8.27</span>,
+  <span class="tok-str">"paperHeight"</span>: <span class="tok-num">11.69</span>,
+  <span class="tok-str">"marginTop"</span>: <span class="tok-num">0</span>, <span class="tok-str">"marginBottom"</span>: <span class="tok-num">0</span>, <span class="tok-str">"marginLeft"</span>: <span class="tok-num">0</span>, <span class="tok-str">"marginRight"</span>: <span class="tok-num">0</span>,
+  <span class="tok-str">"preferCSSPageSize"</span>: <span class="tok-kw">true</span>,
+  <span class="tok-str">"transferMode"</span>: <span class="tok-str">"ReturnAsStream"</span>
+}</code></pre>
+
+<span class="code-label">powershell · 兜底 A 的启动命令（注意 --headless=new）</span>
+<pre><code>&amp; <span class="tok-str">"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"</span> `
+  <span class="tok-str">--headless=new</span> `
+  <span class="tok-str">--disable-gpu</span> `
+  <span class="tok-str">--remote-debugging-port=0</span> `
+  <span class="tok-str">--remote-allow-origins=*</span> `
+  <span class="tok-str">--user-data-dir=$env:TEMP\mdviewer-cdp</span> `
+  <span class="tok-str">--no-first-run --no-default-browser-check</span> `
+  <span class="tok-str">"file:///E:/MDyuedu/docs/m0/print-poc.html"</span></code></pre>
+
+<h3 id="s3-4">3.4 标本 C-C：跨页长代码块（显式 <code>break-inside: auto</code>）</h3>
+<p class="note"><span class="specimen-tag">C-C</span>
+本块高度超过一整页，因此<strong>不能</strong>用 <code>break-inside: avoid</code>（那会导致整块被推到下一页后仍然被迫断开，白白浪费一页）。
+这里显式声明 <code>allow-break</code>。期望：代码块在页边界处干净断开，续页首行不丢字符、背景与边框衔接自然。
+核对办法：行号是连续的 <code>L001…L072</code>，PDF 中不得缺号。</p>
+
+<span class="code-label">text · 72 行，显式允许跨页</span>
+<pre class="allow-break"><code id="c-c-body">（由脚本填充 72 行编号内容）</code></pre>
+
+<!-- ============================================================ -->
+<h2 id="s4" class="page-break-before">四、Mermaid 图（矢量清晰度验收）</h2>
+
+<p>下面两张图使用本地 <code>assets/mermaid/mermaid.min.js</code>（<strong>11.16.1</strong>）渲染，配置了
+<code>startOnLoad: false</code> + <code>flowchart.htmlLabels: false</code>。
+后者很关键：<code>htmlLabels: true</code> 会把标签放进 <code>&lt;foreignObject&gt;</code>，
+而 <code>foreignObject</code> 在打印管线里经常被栅格化或错位；关掉它之后标签是纯 SVG <code>&lt;text&gt;</code>，
+在 PDF 中应当是可选中、可无限放大的矢量文字。<strong>验收动作</strong>：在 PDF 阅读器里放大到 400 %，
+若边缘出现马赛克即为栅格化；再试着用鼠标框选图中的中文标签，能选中即为矢量文字。</p>
+
+<figure>
+<pre class="mermaid" id="mmd-flow">
+flowchart TD
+  A["用户双击 .md 文件"] --> B{"已有实例在运行？"}
+  B -->|"是"| C["single-instance 路由&lt;br/&gt;把路径发给已有窗口"]
+  B -->|"否"| D["启动主进程&lt;br/&gt;创建 WebView2"]
+  C --> E["读取文件并探测编码"]
+  D --> E
+  E --> F["Vditor.preview() 渲染"]
+  F --> G{"用户选择导出 PDF？"}
+  G -->|"否"| H["只读浏览"]
+  G -->|"是"| I["创建隐藏 WebView2&lt;br/&gt;加载打印用 HTML"]
+  I --> J["轮询 window.__PRINT_READY__"]
+  J --> K{"30 秒内就绪？"}
+  K -->|"是"| L["PrintToPdf 主路线"]
+  K -->|"否"| M["兜底 A：CDP 驱动 msedge.exe"]
+  L --> N{"isSuccessful？"}
+  N -->|"是"| O["写出 A4 PDF&lt;br/&gt;记录页数与耗时"]
+  N -->|"否"| M
+  M --> O
+  O --> P["销毁隐藏 WebView 与用户数据目录"]
+</pre>
+<figcaption>图 1　PDF 导出主路线与兜底 A 的决策流（flowchart TD，htmlLabels 关闭）</figcaption>
+</figure>
+
+<figure>
+<pre class="mermaid" id="mmd-seq">
+sequenceDiagram
+  autonumber
+  participant U as 用户
+  participant APP as MD Viewer 主进程
+  participant WV as 隐藏 WebView2
+  participant PG as 打印页 print-poc.html
+  participant FS as 文件系统
+
+  U->>APP: 触发「导出 PDF」
+  APP->>WV: CreateCoreWebView2Controller（不可见窗口）
+  APP->>WV: Navigate(file:///…/print-poc.html)
+  WV->>PG: 加载 HTML / CSS / 本地 JS
+  PG->>PG: KaTeX 渲染公式
+  PG->>PG: await mermaid.run()
+  PG->>PG: await document.fonts.ready
+  PG-->>WV: __PRINT_READY__ = true + postMessage
+  loop 每 100ms，上限 30s
+    APP->>WV: ExecuteScript("window.__PRINT_READY__")
+    WV-->>APP: "true" / "false"
+  end
+  APP->>WV: PrintToPdf(路径, A4 设置)
+  WV->>FS: 写出 PDF 字节流
+  FS-->>APP: isSuccessful = true
+  APP->>WV: Close()（销毁控制器与用户数据目录）
+  APP-->>U: 通知「已导出，共 N 页，耗时 T ms」
+</pre>
+<figcaption>图 2　静默导出时序（sequenceDiagram，含 30 秒轮询上限与销毁步骤）</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="s5">五、KaTeX 公式（0.16.9，本地字体）</h2>
+
+<p class="note">KaTeX 的字形来自 <code>assets/katex/fonts/*.woff2</code>（共 20 个字族）。
+这些是<strong>下载字体</strong>而非系统字体，是 PDF 字体嵌入最容易出问题的地方：
+若 PDF 中根号、求和号、大括号变成方框或错位，说明字体没被嵌入或嵌入了错误子集。
+本页在发出 PRINT_READY 之前会<strong>逐个 <code>document.fonts.load()</code></strong> 所有已注册字族，
+再等 <code>document.fonts.ready</code>，就是为了消除"懒加载还没触发就打印"这一类竞态。</p>
+
+<p>行内公式示例：设文档渲染耗时为 <span class="math-inline">T_{\text{render}}</span>，
+打印耗时为 <span class="math-inline">T_{\text{print}}</span>，则端到端导出耗时
+<span class="math-inline">T_{\text{total}} = T_{\text{render}} + T_{\text{print}} + \varepsilon</span>，
+其中 <span class="math-inline">\varepsilon</span> 为进程创建与销毁开销，实测应满足
+<span class="math-inline">\varepsilon \le 400\,\mathrm{ms}</span>。另有一个带上下标与分式的行内式：
+<span class="math-inline">\rho = \frac{n_{\text{pages}}}{s_{\text{bytes}}/2^{20}}</span>（页数每 MB）。</p>
+
+<p>块级公式（求和、积分、根号、矩阵、对齐环境）：</p>
+
+<div class="math-block" data-display="true">\hat{T}_{\text{total}} \;=\; \frac{1}{N}\sum_{i=1}^{N}\left( T^{(i)}_{\text{render}} + T^{(i)}_{\text{print}} \right) \;+\; \sqrt{\frac{1}{N-1}\sum_{i=1}^{N}\bigl(T^{(i)} - \bar{T}\bigr)^{2}}</div>
+
+<div class="math-block" data-display="true">\int_{0}^{\infty} e^{-\lambda t}\,\mathrm{d}t \;=\; \frac{1}{\lambda},\qquad \lambda &gt; 0</div>
+
+<div class="math-block" data-display="true">\mathbf{M} = \begin{bmatrix} a_{11} &amp; a_{12} &amp; \cdots &amp; a_{1n} \\ a_{21} &amp; a_{22} &amp; \cdots &amp; a_{2n} \\ \vdots &amp; \vdots &amp; \ddots &amp; \vdots \\ a_{m1} &amp; a_{m2} &amp; \cdots &amp; a_{mn} \end{bmatrix}</div>
+
+<div class="math-block" data-display="true">\begin{aligned} P(\text{超时}) &amp;= \Pr\bigl[T_{\text{ready}} &gt; 30\,\mathrm{s}\bigr] \\ &amp;\approx 1 - \Phi\!\left(\frac{30 - \mu}{\sigma}\right) \\ &amp;\le 10^{-3} \quad (\text{出口要求}) \end{aligned}</div>
+
+<p class="note">上面第四个块级式子用了 <code>aligned</code> 环境与 <code>\text{}</code> 中文，
+中文在 KaTeX 里会回落到 CSS 的 <code>font-family</code>（即系统中文字体）而非 KaTeX 字族，
+所以它同时验证了"公式内中文"这一路径。</p>
+
+<!-- ============================================================ -->
+<h2 id="s6">六、图片（全部内联，零外部请求）</h2>
+
+<p>三种图片形态各一份，均不产生任何网络请求：</p>
+
+<figure>
+<svg class="inline-fig" width="620" height="190" viewBox="0 0 620 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="导出耗时柱状对比示意">
+  <rect x="0" y="0" width="620" height="190" fill="#ffffff"/>
+  <line x1="52" y1="156" x2="596" y2="156" stroke="#8a9199" stroke-width="1"/>
+  <line x1="52" y1="18" x2="52" y2="156" stroke="#8a9199" stroke-width="1"/>
+  <g font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11" fill="#4a5158">
+    <text x="46" y="160" text-anchor="end">0</text>
+    <text x="46" y="114" text-anchor="end">2s</text>
+    <text x="46" y="68" text-anchor="end">4s</text>
+    <text x="46" y="24" text-anchor="end">6s</text>
+  </g>
+  <g>
+    <rect x="92"  y="86"  width="64" height="70"  fill="#0b62c4"/>
+    <rect x="192" y="52"  width="64" height="104" fill="#4c9be8"/>
+    <rect x="292" y="110" width="64" height="46"  fill="#0b62c4"/>
+    <rect x="392" y="68"  width="64" height="88"  fill="#4c9be8"/>
+    <rect x="492" y="128" width="64" height="28"  fill="#1a7f37"/>
+  </g>
+  <g font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11" fill="#1b1f24" text-anchor="middle">
+    <text x="124" y="172">主路线·冷启</text>
+    <text x="224" y="172">兜底A·冷启</text>
+    <text x="324" y="172">主路线·热</text>
+    <text x="424" y="172">兜底A·热</text>
+    <text x="524" y="172">纯渲染</text>
+  </g>
+  <text x="324" y="14" text-anchor="middle" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="12" font-weight="700" fill="#1b1f24">导出耗时对比（示意数据，实测值以报告为准）</text>
+</svg>
+<figcaption>图 3　内联 <code>&lt;svg&gt;</code>：应在 PDF 中保持矢量，文字可选中</figcaption>
+</figure>
+
+<figure>
+<img class="demo" width="340" height="120" alt="data URI 承载的 SVG 图片"
+  src="data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'340'%20height%3D'120'%20viewBox%3D'0%200%20340%20120'%3E%3Crect%20width%3D'340'%20height%3D'120'%20fill%3D'%23f6f8fa'%2F%3E%3Ccircle%20cx%3D'62'%20cy%3D'60'%20r%3D'34'%20fill%3D'%230b62c4'%2F%3E%3Crect%20x%3D'118'%20y%3D'30'%20width%3D'60'%20height%3D'60'%20fill%3D'%231a7f37'%2F%3E%3Cpolygon%20points%3D'238%2C26%20272%2C94%20204%2C94'%20fill%3D'%23b26b00'%2F%3E%3Ctext%20x%3D'298'%20y%3D'66'%20font-size%3D'14'%20fill%3D'%231b1f24'%3ESVG%3C%2Ftext%3E%3C%2Fsvg%3E">
+<figcaption>图 4　<code>&lt;img src="data:image/svg+xml,…"&gt;</code>：矢量，但走图片解码路径</figcaption>
+</figure>
+
+<figure>
+<img class="demo" width="192" height="192" alt="16x16 位图放大，用于观察 PDF 中的栅格图重采样"
+  src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABYUlEQVR42m3QMZEFIRQF0WcBAwRYwAJ1HWABC1jAAhkxFrCABSxgobc2m5n6QUcnazMZTkaQEWV4G6+ajC5jylg/3EwOJ0eQI8rh3XjV5OhyTDnWDzdTwCkQFIgK+DBeNQW6AlOB9cPNFHGKBEWiIj6OV02RrshUZP1w82nwLCmRlShKVCW+vpU4SlwlUMJ8HjxLymRlijJVma9vZY4yVxmUMV8Gz5IKWYWiQlXh61uFo8JVARXM18GzpEpWpahSVfn6VuWoclVB9X9iw6kR1Ihq+DZeNTW6GlON9cPN1HHqBHWiOr6PV02drs5UZ/1wM02cJkGTqImf41XTpGsyNVk/3EwLp0XQImrh13jVtOhaTC3WDze/B8+SNlmbok3V5utbm6PN1QZtzJ/Bs6RD1qHoUHX4+tbh6HB1QAfzd/As6ZJ1KbpUXb6+dTm6XF3QxTyDZ0mQBUVQBV/fgiO4AgR/d+ZAXyzHR3kAAAAASUVORK5CYII=">
+<figcaption>图 5　16×16 PNG 放大到 192 px（<code>image-rendering: pixelated</code>）：验证栅格图在 PDF 中是否被二次重采样</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="s7">七、链接与 URL 打印策略</h2>
+
+<p>本页对链接的打印决策是：<strong>页内锚点不追加 URL，站外/文件链接追加 <code>[url]</code></strong>。理由是导出的 PDF
+往往要脱离阅读器分享，外链必须可见；而目录跳转类锚点追加后只会产生 <code>[#s1]</code> 之类的噪音。</p>
+
+<ul>
+  <li>页内锚点（<strong>不应</strong>出现 URL）：<a href="#s1">跳到第一节</a>、<a href="#s3">跳到第三节</a>、<a href="#s9">跳到验收清单</a>；</li>
+  <li>本地文件链接（<strong>应</strong>出现 URL）：<a href="file:///E:/MDyuedu/docs/m0/README.md">M0 报告目录说明</a>；</li>
+  <li>标注 <code>class="no-url"</code> 的链接（<strong>不应</strong>出现 URL，用于图标/按钮类）：<a class="no-url" href="file:///E:/MDyuedu/DEV_GUIDE.md">开发指南（抑制 URL）</a>；</li>
+  <li>超长 URL 换行测试（<strong>应</strong>出现 URL 且能折行）：
+    <a class="longurl" href="file:///E:/MDyuedu/docs/m0/assets/katex/fonts/KaTeX_Main-Regular.woff2?verify=font-embedding&amp;route=print_to_pdf&amp;milestone=M0-1&amp;acceptance=no-tofu-no-clipping-no-truncation">KaTeX 主字体（带超长查询串）</a>。</li>
+</ul>
+
+<p class="note">注意：本页不含任何 <code>http(s)://</code> 链接——红线 8 要求零外网。
+上面 <code>a[href^="http"]</code> 的打印规则保留着，是给 M1 真实文档用的；
+验收时若想测它，可以临时在 DevTools 里加一个 http 链接观察，<strong>不要</strong>把它写进本文件。</p>
+
+<!-- ============================================================ -->
+<h2 id="s8">八、分页压力：连续正文</h2>
+
+<p>以下段落用于把文档撑到 A4 六页以上，同时提供均匀的正文密度，便于观察行距在跨页处是否发生跳变、
+以及页脚附近是否出现孤行。每段结尾都带一个编号锚点 <code>¶NN</code>，PDF 中应当从 ¶01 连续到 ¶14 无缺失。</p>
+
+<div id="filler"><!-- 由脚本填充 14 段 --></div>
+
+<!-- ============================================================ -->
+<h2 id="s9" class="page-break-before">九、验收清单（打印后逐项核对）</h2>
+
+<div class="checklist">
+<ol>
+  <li>首页顶部说明块中的<strong>环境戳</strong>已被脚本填入（不是"等待脚本写入…"），且其中 <code>PRINT_READY</code> 显示为 <code>true</code>；</li>
+  <li>全文无方块字（tofu）、无问号替代字符；「」《》——…… 等标点形状正确；</li>
+  <li>§2 T-A 十列表格完整无裁切；表头灰底按预期出现或缺席（与 <code>ShouldPrintBackgrounds</code> 设置一致）；</li>
+  <li>§2 T-B 超宽表：记录是<strong>裁切</strong>还是<strong>缩放</strong>，并注明缺失的列名；</li>
+  <li>§2 T-C 固定布局表：12 列全在纸面内；</li>
+  <li>§2 T-D 长表跨页后，表头「序号／校验项／…」在<strong>每一页</strong>重复；无半截行；</li>
+  <li>§3 标题另起一页（<code>break-before: page</code> 生效）；</li>
+  <li>§3.1 C-A 尾部可见 <code>&lt;END-C-A&gt;</code>；深路径与 SQL 行完整；</li>
+  <li>§3.2 C-B 记录 <code>&lt;END-C-B&gt;</code> 是否可见（这是"截断行为"的判据）；</li>
+  <li>§3.3 五个语言块的手写着色 token（紫/绿/橙/蓝）在 PDF 中保留了颜色；</li>
+  <li>§3.4 C-C 行号 <code>L001…L072</code> 连续，跨页处无丢行、无重复；</li>
+  <li>§4 图 1 / 图 2 完整可见，未被右侧裁切；放大 400 % 边缘锐利；中文标签可被鼠标选中（矢量文字）；</li>
+  <li>§4 两图内无「（Mermaid 尚未渲染 …）」红字；</li>
+  <li>§5 行内与块级公式的根号、求和号、积分号、大括号、矩阵括号形状正确无错位；<code>\text{超时}</code> 中文正常；</li>
+  <li>§6 图 3 内联 SVG 文字可选中；图 4 data-URI SVG 清晰；图 5 位图放大后为方块马赛克（说明未被平滑重采样）；</li>
+  <li>§7 页内锚点<strong>无</strong> <code>[…]</code> 后缀；<code>file:</code> 链接<strong>有</strong>后缀且超长 URL 能折行；</li>
+  <li>§8 段落编号 ¶01–¶14 连续；跨页处无孤行（单独一行落在页首/页尾）；</li>
+  <li>总页数 ≥ 3（预期 6–9 页，随字体版本浮动），记录实际页数与文件字节数；</li>
+  <li>记录端到端耗时：从 Navigate 到 <code>isSuccessful</code> 的墙钟时间，以及页面自报的 <code>__PRINT_TIMING__.total</code>；</li>
+  <li>主路线 PDF 与兜底 A PDF 逐项对比，把差异写进 <code>docs/m0/m0-1-pdf-poc.md</code> 的"二、数据"表。</li>
+</ol>
+</div>
+
+<p class="note screen-only">提示：本清单在屏幕上和 PDF 里都会显示；徽标只在屏幕上显示。</p>
+
+</main>
+
+<!-- ======================= 本地脚本（顺序有意义） ======================= -->
+<script src="assets/katex/katex.min.js"></script>
+<script src="assets/mermaid/mermaid.min.js"></script>
+<script>
+/* ==========================================================================
+   PRINT_READY 编排器
+   顺序：填充动态内容 → KaTeX → Mermaid → 图片 decode → 字体 → 双帧 → 置位
+   宿主（Rust / CDP）应以 window.__PRINT_READY__ 为准；错误另见 __PRINT_ERROR__。
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var T0 = (performance && performance.now) ? performance.now() : Date.now();
+  var timing = {};
+  var stage = 'boot';
+  var finished = false;
+
+  window.__PRINT_READY__ = false;
+  window.__PRINT_ERROR__ = null;
+  window.__PRINT_TIMING__ = timing;
+  window.__PRINT_ENV__ = null;
+
+  function now() { return Math.round(((performance && performance.now) ? performance.now() : Date.now()) - T0); }
+  function log(msg) { try { console.log('[print-poc] ' + msg); } catch (e) {} }
+  function mark(name) { timing[name] = now(); log(name + ' @+' + timing[name] + 'ms'); }
+  function fail(msg) {
+    window.__PRINT_ERROR__ = (window.__PRINT_ERROR__ ? window.__PRINT_ERROR__ + ' | ' : '') + msg;
+    log('ERROR: ' + msg);
+  }
+  function badge(text, title) {
+    var el = document.getElementById('ready-badge');
+    if (el) { el.textContent = text; if (title) { el.title = title; } }
+  }
+  function frames(n) {
+    return new Promise(function (res) {
+      (function step(i) { i <= 0 ? res() : requestAnimationFrame(function () { step(i - 1); }); })(n);
+    });
+  }
+
+  /* ---------- 0. 动态内容填充（同步，必须在测量之前完成） ---------- */
+  function fillDynamicContent() {
+    // T-D：34 行长表
+    var rows = [
+      '中文正文无 tofu', '全角标点形状正确', '中英混排断行合理', '数字与单位不分离',
+      'T-A 十列完整', 'T-A 表头底色', 'T-B 超宽表裁切/缩放', 'T-B 缺列清单',
+      'T-C 固定布局全列可见', 'T-D 表头逐页重复', 'T-D 无半截行', '§3 强制分页生效',
+      'C-A 尾标记可见', 'C-A 深路径完整', 'C-A SQL 行完整', 'C-B 尾标记可见性',
+      'C-C 行号 L001 起', 'C-C 行号 L072 止', 'C-C 跨页无丢行', '代码 token 颜色保留',
+      '图 1 未被裁切', '图 1 放大 400% 锐利', '图 1 标签可选中', '图 2 未被裁切',
+      '图 2 autonumber 正确', '无“尚未渲染”红字', '行内公式基线对齐', '块级公式居中',
+      '根号/求和号无错位', '矩阵括号完整', '公式内中文正常', '内联 SVG 文字可选中',
+      'data-URI 图片清晰', '锚点链接无 URL 后缀'
+    ];
+    var expects = [
+      '无方块字', '「」《》……', '无过大空洞', '≤1 s 不断行',
+      '10 列全见', '与打印背景设置一致', '记录实际行为', '列名列表',
+      '12 列全见', '每页顶部有表头', 'tr 不跨页', '标题在新页首',
+      '<END-C-A> 可见', '路径不丢字符', '分号收尾可见', '记录是否可见',
+      'L001 存在', 'L072 存在', '编号连续', '紫/绿/橙/蓝可辨',
+      '右边界在纸内', '无马赛克', '可框选', '右边界在纸内',
+      '1..N 连续', '两图皆无', '不下沉不上浮', '水平居中',
+      '符号完整', '[ ] 高度贴合', '“超时”二字正常', '可框选',
+      '边缘清晰', '无 [#sX]'
+    ];
+    var tbody = document.getElementById('t-d-body');
+    if (tbody) {
+      var html = '';
+      for (var i = 0; i < rows.length; i++) {
+        html += '<tr><td class="num">' + (i + 1) + '</td><td>' + rows[i] + '</td><td>' +
+                expects[i] + '</td><td>&nbsp;</td><td>&nbsp;</td></tr>';
+      }
+      tbody.innerHTML = html;
+    }
+
+    // C-C：72 行编号代码，跨页标本
+    var cc = document.getElementById('c-c-body');
+    if (cc) {
+      var lines = [];
+      for (var n = 1; n <= 72; n++) {
+        var id = 'L' + ('00' + n).slice(-3);
+        var seg;
+        if (n % 12 === 1)      seg = '// ---- 分段 ' + Math.ceil(n / 12) + ' ：跨页标本 C-C ----';
+        else if (n % 6 === 0)  seg = 'assert_eq!(page_count_of("' + id + '"), expected_pages, "第 ' + n + ' 行：页数应一致");';
+        else if (n % 5 === 0)  seg = 'let 中文变量名_' + n + ' = "混排 mixed 内容 " + &format!("{:>6}", ' + n * 37 + ');';
+        else                   seg = 'settings.set_margin(top=18.0, bottom=20.0, left=15.0, right=15.0); // 行 ' + n;
+        lines.push(id + ' | ' + seg);
+      }
+      cc.textContent = lines.join('\n');
+    }
+
+    // §8：14 段正文
+    var filler = document.getElementById('filler');
+    if (filler) {
+      var seeds = [
+        '静默导出的核心难点不在“怎么生成 PDF”，而在“什么时候可以开始生成”。任何一个异步渲染步骤没跑完就触发打印，产出的都是看起来正常、实则缺图缺字的半成品，而这种缺陷在自动化流程里极难被发现——因为进程返回码是成功的。',
+        '主路线依赖 WebView2 的 PrintToPdf。它的优点是不启动额外进程、不占用调试端口、不受用户机器上 Edge 版本策略影响；缺点是可配置项少于 CDP，页眉页脚与页边距的表达能力有限，遇到超宽内容时的缩放策略也不完全透明。',
+        '兜底 A 走 CDP。它把 msedge.exe 以 --headless=new 拉起，通过 WebSocket 发 Page.printToPDF。优点是参数丰富、preferCSSPageSize 行为明确；缺点是要额外拉一个浏览器进程、要处理端口占用与用户数据目录清理，冷启动耗时通常高出四成。',
+        '两条路线共用同一份 HTML 与同一套 CSS，这一点必须保证，否则对比就失去意义。本页正是这份“同一份 HTML”：它刻意把中文、超宽表、超长行、矢量图、下载字体这五类高风险内容压在一起，任何一路失手都会在纸面上留下痕迹。',
+        '字体嵌入是最隐蔽的一类失败。中文字体动辄十几兆，打印引擎只会嵌入用到的字形子集。如果子集化逻辑出错，在生成机器上打开一切正常，换台没装该字体的机器就会满屏方块。因此验收必须在“没装源字体的机器”上再开一次 PDF。',
+        'KaTeX 的风险更高一层：它用的是自带 woff2 下载字体，且是懒加载的——只有当页面上真的出现某个符号，浏览器才会去取对应字族。如果打印发生在字体请求返回之前，公式就会用回退字体排版，符号错位甚至消失。',
+        '本页的对策是在发信号之前遍历 document.fonts，对每一个已注册的 FontFace 主动调用 load()，再 await document.fonts.ready。这比单纯等 fonts.ready 可靠得多，因为后者只保证“当前正在加载的”字体完成，不保证“将来会用到的”字体被触发。',
+        'Mermaid 的风险在于它是异步的、且默认把标签塞进 foreignObject。异步意味着必须 await mermaid.run() 的 Promise；foreignObject 意味着打印时可能被当作独立的 HTML 子树重新布局，在部分版本上会错位或被栅格化。关掉 htmlLabels 是更稳的选择。',
+        '表格跨页是纸面输出特有的问题，屏幕上根本不存在。thead 必须声明为 table-header-group 才会逐页重复；tr 必须 break-inside: avoid 才不会被撕成两半。这两条规则在 Chromium 上支持良好，但在超宽表溢出时行为会变得微妙，需要实测。',
+        '代码块的分页策略需要分类处理。短块用 break-inside: avoid 保持完整；但对于超过一页高度的长块，同样的规则会让它先被整体推到下一页、然后仍旧被迫断开，白白浪费半页纸。所以导出管线必须按块高度动态决定，而不是一刀切。',
+        '背景色有两个开关。CSS 侧是 print-color-adjust，取值 economy 时浏览器可以自行省略背景以省墨；exact 时要求忠实还原。宿主侧是 ShouldPrintBackgrounds（CDP 对应 printBackground）。两者的优先级关系不写在任何文档里，只能靠实测确定。',
+        '链接 URL 的追加策略是个产品决策而非技术决策。导出的 PDF 通常会脱离原始阅读环境流转，外链不可见就等于丢信息；但页内锚点追加后只会制造噪音。本页采用的折中方案是按 href 前缀分流，并保留一个 no-url 类做例外。',
+        '耗时口径也需要统一。页面自报的 __PRINT_TIMING__.total 只覆盖“加载完成到就绪”这一段，不含进程创建、导航、PDF 编码与落盘。报告里必须同时给出宿主侧的墙钟耗时，两个数字的差值就是引擎本身的开销，这才是选路线的依据。',
+        '最后是失败模式的记录。任何一条路线在什么条件下会失败、失败时是抛错还是静默产出坏文件、能否重试、重试是否幂等——这些比“成功耗时多少毫秒”更重要，因为它们决定了 M1 要写多少防御性代码。请把它们逐条写进报告第五节。'
+      ];
+      var out = '';
+      for (var k = 0; k < seeds.length; k++) {
+        out += '<p>' + seeds[k] + '<strong>&nbsp;¶' + ('0' + (k + 1)).slice(-2) + '</strong></p>';
+      }
+      filler.innerHTML = out;
+    }
+    mark('fillDynamic');
+  }
+
+  /* ---------- 1. KaTeX ---------- */
+  function renderKatex() {
+    if (typeof window.katex === 'undefined') {
+      fail('katex 未加载：assets/katex/katex.min.js 缺失或被拦截');
+      return;
+    }
+    var inline = document.querySelectorAll('.math-inline');
+    var block = document.querySelectorAll('.math-block');
+    var i, src;
+    for (i = 0; i < inline.length; i++) {
+      src = inline[i].textContent;
+      try {
+        window.katex.render(src, inline[i], { displayMode: false, throwOnError: false, output: 'html' });
+      } catch (e) { fail('KaTeX 行内失败: ' + src.slice(0, 40) + ' → ' + e.message); }
+    }
+    for (i = 0; i < block.length; i++) {
+      src = block[i].textContent;
+      try {
+        window.katex.render(src, block[i], { displayMode: true, throwOnError: false, output: 'html' });
+      } catch (e) { fail('KaTeX 块级失败: ' + src.slice(0, 40) + ' → ' + e.message); }
+    }
+    timing.katexNodes = inline.length + block.length;
+    mark('katex');
+  }
+
+  /* ---------- 2. Mermaid（必须 await run 的 Promise） ---------- */
+  function renderMermaid() {
+    if (typeof window.mermaid === 'undefined') {
+      fail('mermaid 未加载：assets/mermaid/mermaid.min.js 缺失或被拦截');
+      return Promise.resolve();
+    }
+    var cjk = '"Microsoft YaHei", "微软雅黑", "Segoe UI", sans-serif';
+    try {
+      window.mermaid.initialize({
+        startOnLoad: false,          // 关键：不要让它自己跑，否则无法 await
+        securityLevel: 'strict',
+        theme: 'default',
+        deterministicIds: true,      // 让两次导出的 SVG id 一致，便于 PDF 逐字节比对
+        deterministicIDSeed: 'm0-print-poc',
+        fontFamily: cjk,
+        maxTextSize: 200000,
+        flowchart: { htmlLabels: false, useMaxWidth: true, curve: 'basis' },
+        sequence: {
+          useMaxWidth: true,
+          actorFontFamily: cjk, noteFontFamily: cjk, messageFontFamily: cjk,
+          actorFontSize: 13, messageFontSize: 12, noteFontSize: 12
+        }
+      });
+    } catch (e) {
+      fail('mermaid.initialize 失败: ' + e.message);
+      return Promise.resolve();
+    }
+
+    var nodes = document.querySelectorAll('.mermaid');
+    timing.mermaidNodes = nodes.length;
+    // mermaid 10/11 的 run() 返回 Promise，必须 await
+    return Promise.resolve(window.mermaid.run({ querySelector: '.mermaid', suppressErrors: false }))
+      .then(function () {
+        var un = document.querySelectorAll('.mermaid:not([data-processed])');
+        if (un.length) { fail('仍有 ' + un.length + ' 个 .mermaid 未标记 data-processed'); }
+        mark('mermaid');
+      })
+      .catch(function (e) {
+        fail('mermaid.run 失败: ' + (e && e.message ? e.message : String(e)));
+        mark('mermaid');
+      });
+  }
+
+  /* ---------- 3. 图片解码 ---------- */
+  function waitImages() {
+    var imgs = Array.prototype.slice.call(document.images || []);
+    timing.imageCount = imgs.length;
+    return Promise.all(imgs.map(function (img) {
+      if (img.decode) { return img.decode().catch(function () { fail('图片 decode 失败: ' + img.alt); }); }
+      if (img.complete) { return Promise.resolve(); }
+      return new Promise(function (res) { img.onload = img.onerror = res; });
+    })).then(function () { mark('images'); });
+  }
+
+  /* ---------- 4. 字体：主动 load 全部注册字族，再等 fonts.ready ---------- */
+  function waitFonts() {
+    if (!document.fonts) { timing.fontFaces = -1; mark('fonts'); return Promise.resolve(); }
+    var specs = {};
+    try {
+      document.fonts.forEach(function (f) {
+        specs[(f.style || 'normal') + ' ' + (f.weight || '400') + ' 16px "' + f.family + '"'] = true;
+      });
+    } catch (e) { /* FontFaceSet 不可迭代时忽略 */ }
+    var list = Object.keys(specs);
+    timing.fontFaces = list.length;
+
+    var jobs = list.map(function (s) {
+      return document.fonts.load(s, '0123456789ABCabc\u2211\u222B\u221A').catch(function () {});
+    });
+    // 中文系统字体：用真实中文触发子集加载
+    jobs.push(document.fonts.load('16px ' + '"Microsoft YaHei"', '中文测试标点，。').catch(function () {}));
+    jobs.push(document.fonts.load('12.5px ' + '"Cascadia Mono"', '0123456789abcXYZ').catch(function () {}));
+
+    return Promise.all(jobs)
+      .then(function () { return document.fonts.ready; })
+      .then(function () { mark('fonts'); });
+  }
+
+  /* ---------- 5. 离线自检（红线 8）与环境采集 ---------- */
+  function collectEnv() {
+    var foreign = [];
+    try {
+      var entries = performance.getEntriesByType ? performance.getEntriesByType('resource') : [];
+      for (var i = 0; i < entries.length; i++) {
+        var u = entries[i].name || '';
+        if (/^(https?|wss?):/i.test(u)) { foreign.push(u); }
+      }
+      timing.resourceEntries = entries.length;
+    } catch (e) { timing.resourceEntries = -1; }
+
+    var host = 'browser';
+    if (window.__TAURI__) { host = 'tauri(global)'; }
+    else if (window.__TAURI_INTERNALS__) { host = 'tauri(internals)'; }
+    else if (window.chrome && window.chrome.webview) { host = 'webview2(raw)'; }
+
+    return {
+      ready: true,
+      error: window.__PRINT_ERROR__,
+      host: host,
+      href: location.href,
+      ua: navigator.userAgent,
+      dpr: window.devicePixelRatio,
+      viewport: window.innerWidth + 'x' + window.innerHeight,
+      lang: navigator.language,
+      mermaid: (window.mermaid && window.mermaid.mermaidAPI) ? 'loaded' : 'missing',
+      katex: (window.katex && window.katex.version) ? window.katex.version : 'missing',
+      offlineOk: foreign.length === 0,
+      foreignRequests: foreign,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  function writeStamp(env) {
+    var el = document.getElementById('env-stamp');
+    if (!el) { return; }
+    var nostamp = /[?&]nostamp=1/.test(location.search);
+    var lines = [
+      'PRINT_READY = true' + (window.__PRINT_ERROR__ ? '（带错误）' : '') +
+        '　宿主 = ' + env.host + '　离线自检 = ' + (env.offlineOk ? 'PASS（0 个外网请求）' : 'FAIL: ' + env.foreignRequests.join(', ')),
+      'Mermaid = ' + env.mermaid + '　KaTeX = ' + env.katex +
+        '　字族 = ' + timing.fontFaces + '　图片 = ' + timing.imageCount + '　图表 = ' + timing.mermaidNodes,
+      '耗时(ms)：填充 ' + timing.fillDynamic + ' / KaTeX ' + timing.katex + ' / Mermaid ' + timing.mermaid +
+        ' / 图片 ' + timing.images + ' / 字体 ' + timing.fonts + ' / 合计 ' + timing.total
+    ];
+    if (!nostamp) {
+      lines.push('时间 = ' + env.timestamp + '　DPR = ' + env.dpr + '　视口 = ' + env.viewport);
+      lines.push('UA = ' + env.ua);
+    } else {
+      lines.push('（?nostamp=1：已省略时间戳与 UA，用于逐字节比对两份 PDF）');
+    }
+    if (window.__PRINT_ERROR__) { lines.push('!! ERROR = ' + window.__PRINT_ERROR__); }
+    el.textContent = lines.join('\n');
+    el.style.whiteSpace = 'pre-wrap';
+  }
+
+  /* ---------- 6. 置位并广播 ---------- */
+  function finalize() {
+    if (finished) { return; }
+    finished = true;
+    timing.total = now();
+
+    var env = collectEnv();
+    window.__PRINT_ENV__ = env;
+    window.__PRINT_READY__ = true;
+
+    var hasErr = !!window.__PRINT_ERROR__;
+    document.documentElement.setAttribute('data-print-ready', hasErr ? 'error' : 'true');
+    badge(hasErr ? '就绪（有错误）' : '就绪 ✓  ' + timing.total + 'ms',
+          hasErr ? window.__PRINT_ERROR__ : JSON.stringify(timing));
+    writeStamp(env);
+
+    // 信号 B：页内事件
+    try { document.dispatchEvent(new Event('print-ready')); } catch (e) {}
+
+    // 信号 C / D：宿主通道
+    var payload = { ready: true, error: window.__PRINT_ERROR__, timing: timing, env: env };
+    try {
+      if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.emit === 'function') {
+        // withGlobalTauri: true 时可用
+        window.__TAURI__.event.emit('PRINT_READY', payload);
+        log('emitted via __TAURI__.event.emit');
+      } else if (window.__TAURI_INTERNALS__ && typeof window.__TAURI_INTERNALS__.invoke === 'function') {
+        // withGlobalTauri: false 时的内部通道（需要 core:event:allow-emit 且该窗口在 capability 的 windows 列表里）
+        window.__TAURI_INTERNALS__.invoke('plugin:event|emit', { event: 'PRINT_READY', payload: payload });
+        log('emitted via __TAURI_INTERNALS__.invoke');
+      } else if (window.chrome && window.chrome.webview && typeof window.chrome.webview.postMessage === 'function') {
+        // 裸 WebView2 宿主才走这条，避免与 wry 的 IPC 通道抢消息
+        window.chrome.webview.postMessage(JSON.stringify({ type: 'PRINT_READY', data: payload }));
+        log('posted via chrome.webview.postMessage');
+      } else {
+        log('无宿主通道（纯浏览器），仅置位 __PRINT_READY__');
+      }
+    } catch (e) { log('宿主通道发送失败（不影响 __PRINT_READY__）: ' + e.message); }
+
+    log('READY total=' + timing.total + 'ms error=' + (window.__PRINT_ERROR__ || 'none'));
+  }
+
+  /* ---------- 主流程 + 看门狗 ---------- */
+  var watchdog = setTimeout(function () {
+    if (finished) { return; }
+    fail('看门狗触发：25s 内未完成，卡在阶段 [' + stage + ']');
+    badge('超时·强制就绪', window.__PRINT_ERROR__);
+    finalize();
+  }, 25000);
+
+  function main() {
+    badge('渲染中…', '等待 KaTeX / Mermaid / 字体');
+    Promise.resolve()
+      .then(function () { stage = 'fillDynamic'; fillDynamicContent(); })
+      .then(function () { stage = 'katex'; renderKatex(); })
+      .then(function () { stage = 'mermaid'; return renderMermaid(); })
+      .then(function () { stage = 'images'; return waitImages(); })
+      .then(function () {
+        stage = 'layout';
+        // 强制一次布局，确保懒加载字体的使用被真正触发
+        void document.body.getBoundingClientRect();
+        void document.body.offsetHeight;
+        return frames(2);
+      })
+      .then(function () { stage = 'fonts'; return waitFonts(); })
+      .then(function () { stage = 'settle'; return frames(2); })
+      .catch(function (e) { fail('主流程异常 [' + stage + ']: ' + (e && e.message ? e.message : String(e))); })
+      .then(function () {
+        clearTimeout(watchdog);
+        stage = 'done';
+        finalize();
+      });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', main);
+  } else {
+    main();
+  }
+})();
+</script>
+</body>
+</html>
