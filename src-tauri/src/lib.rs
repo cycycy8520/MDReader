@@ -186,11 +186,16 @@ fn apply_webview_settings(platform: &tauri::webview::PlatformWebview) -> Result<
     let settings = unsafe { core.Settings() }.map_err(|err| format!("取 Settings 失败：{err}"))?;
 
     unsafe {
-        // 浏览器右键菜单（用户点名项）：批次 3 的自绘菜单到位前先保底屏蔽。
-        // 正文选中后的 Ctrl+C 不受影响——复制走的是键盘编辑命令，不经过菜单。
+        // 默认右键菜单**保持开启**，由前端逐目标决定拦不拦（App.tsx 的 contextmenu 委托）：
+        // 非输入框目标 → preventDefault + 弹自绘菜单；输入框 → 放行，让系统菜单接管
+        // （粘贴、输入法候选、拼写建议这些是 WebView 原生能力，自绘菜单做不出等价物）。
+        //
+        // 曾经在这里全局 SetAreDefaultContextMenusEnabled(false)：那是自绘菜单未就位时的
+        // 保底措施，代价是输入框也一起哑了 —— 现在自绘菜单已上线，必须把这条还回去，
+        // 否则搜索框里连粘贴都没有。**改这行前先确认前端委托仍在拦截正文/链接/图片/左栏。**
         settings
-            .SetAreDefaultContextMenusEnabled(false)
-            .map_err(|err| format!("关闭默认右键菜单失败：{err}"))?;
+            .SetAreDefaultContextMenusEnabled(true)
+            .map_err(|err| format!("设置默认右键菜单开关失败：{err}"))?;
         // Ctrl+滚轮「缩放整个窗口」的根源；改由前端只缩正文（1.4）
         settings
             .SetIsZoomControlEnabled(false)

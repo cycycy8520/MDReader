@@ -31,6 +31,12 @@
  *   1.7 阅读区可聚焦 + 打开后自动聚焦（键盘翻页生效）、Esc 语义链、点击已打开文件不重开；
  *   1.8 file-removed 警示条、失效条目的出路、拖入不支持类型的 danger 反馈、工具条文字不可选中。
  *
+ * 批次 3「应用内右键菜单」本文件负责的部分（UPGRADE_PLAN 3.2 / 附录 A）：
+ *   全局 contextmenu 委托 → 按命中目标选四套菜单之一（正文 / 链接 / 图片 / 最近文件条目），
+ *   输入框与可编辑区一律放行（保留系统菜单的粘贴与输入法）；菜单外壳在
+ *   components/ContextMenu.tsx，条目排布在 components/contextMenuItems.ts（对拍附录 A），
+ *   本文件只提供动作实现（复制 / 打开方式 / 缩放主题 / 最近列表增删）。
+ *
  * 阅读区唯一允许的滚动动画是大纲跳转的 250ms 平滑滚动（军规 1）；
  * 加载态一律是一行淡字 + 10px 微 spinner，**不做骨架屏**（DG 6.6）。
  */
@@ -46,6 +52,16 @@ import {
   type RefObject,
 } from "react";
 
+import { ContextMenu, type MenuNode } from "./components/ContextMenu";
+import {
+  buildDocumentMenu,
+  buildImageMenu,
+  buildLinkMenu,
+  buildRecentMenu,
+  type ContextMenuActions,
+  type ImageTarget,
+  type LinkTarget,
+} from "./components/contextMenuItems";
 import { t } from "./i18n/zh-CN";
 import { renderMarkdown, resolveLocalPath } from "./render/preview";
 import {
@@ -57,6 +73,8 @@ import {
   onWindowResized,
   openExternal,
   openFileDialog,
+  openWithDefaultApp,
+  revealInExplorer,
   windowClose,
   windowIsMaximized,
   windowMinimize,
@@ -390,6 +408,166 @@ function smoothScrollTo(scroller: HTMLElement, top: number): void {
     }
   };
   requestAnimationFrame(step);
+}
+
+/* ── 右键菜单（3.2 / 附录 A） ────────────────────────────────────
+   四套菜单的条目定义在 components/contextMenuItems.ts（对拍附录 A 用），
+   菜单外壳在 components/ContextMenu.tsx，本文件只负责「命中什么目标 → 用哪套 → 动作怎么执行」。 */
+
+/**
+ * 这些目标上的右键**不拦截**：直接 return 且不 preventDefault。
+ *
+ * 批次 1 把 WebView2 的默认右键菜单整体关掉了（lib.rs），代价是输入框也一并失去了
+ * 粘贴菜单与输入法候选菜单。自绘菜单不该去顶替这些系统能力（剪贴板读取在只读应用里
+ * 也不该由我们代劳），所以这类目标一律放行，把这条路还给系统。
+ */
+const NATIVE_MENU_SELECTOR =
+  "input, textarea, [contenteditable='true'], [contenteditable='']";
+
+/** 已打开菜单自身：其上的右键吃掉即可，不叠开第二个 */
+const CONTEXT_MENU_SELECTOR = "[data-context-menu]";
+
+/**
+ * 右键时的选区文本。
+ * 右键落在选区之外时 WebView 已经先把选区收掉了，这里自然拿到空串 —— 「复制」两项
+ * 因此会正确置灰，不需要额外判断点击位置是否在选区内。
+ */
+function readSelectionText(): string {
+  return window.getSelection()?.toString() ?? "";
+}
+
+/**
+ * 去格式（「复制为纯文本」）：清零宽字符与软连字符、CRLF 归一、去行尾空白、
+ * 连续空行压成一个。渲染后的 DOM 选区本就不含 Markdown 标记，这一步处理的是
+ * 排版遗留的空白噪声——粘进聊天框/表单时最碍事的正是它们。
+ */
+function toPlainText(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    // Unicode 格式字符（零宽空格/连接符、字节序标记、软连字符、双向控制符）一律清掉
+    .replace(/\p{Cf}/gu, "")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/, ""))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * 写剪贴板：优先 navigator.clipboard.writeText，被拒时降级 textarea + execCommand("copy")。
+ *
+ * 降级路径会临时占用选区，收尾必须把原选区放回去——否则用户刚拖选的正文会在复制后
+ * 凭空消失，看起来像是「复制把内容吃了」。
+ */
+async function writeClipboard(text: string): Promise<void> {
+  if (text === "") {
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch (error: unknown) {
+    console.warn("[app] clipboard.writeText failed, falling back", error);
+  }
+
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.top = "-1000px";
+  area.style.opacity = "0";
+  document.body.append(area);
+
+  const selection = document.getSelection();
+  const previous =
+    selection !== null && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+  area.select();
+  try {
+    document.execCommand("copy");
+  } catch (error: unknown) {
+    console.warn("[app] execCommand copy failed", error);
+  }
+  area.remove();
+  if (selection !== null && previous !== null) {
+    selection.removeAllRanges();
+    selection.addRange(previous);
+  }
+}
+
+/**
+ * 命中的链接目标（附录 A.2：外链与本地 .md 二选一）。
+ * 判定口径与 1.1 的点击委托完全一致，避免「点开的和菜单说的不是一回事」。
+ * 文内锚点（`#xxx`）不算链接目标，右键它落回正文菜单。
+ */
+function readLinkTarget(target: Element, currentPath: string | null): LinkTarget | null {
+  const anchor = target.closest("a[href]");
+  if (!(anchor instanceof HTMLAnchorElement)) {
+    return null;
+  }
+  const href = (anchor.getAttribute("href") ?? "").trim();
+  if (href === "" || href.startsWith("#")) {
+    return null;
+  }
+  if (EXTERNAL_HREF_RE.test(href)) {
+    return { kind: "external", url: href };
+  }
+
+  const { path: rawPath, hash } = splitHash(href);
+  const relative = decodeSafe(rawPath);
+  if (relative !== "" && isSupportedPath(relative)) {
+    if (ABSOLUTE_PATH_RE.test(relative)) {
+      return { kind: "document", path: relative, hash, address: relative };
+    }
+    const baseDir = dirNameOf(currentPath ?? "");
+    if (baseDir !== null) {
+      const absolute = resolveLocalPath(baseDir, relative);
+      return { kind: "document", path: absolute, hash, address: absolute };
+    }
+  }
+  return { kind: "other", address: href };
+}
+
+/**
+ * 命中的图片目标（附录 A.2）。三种形态都要认：
+ *   本地图（渲染层改写为 asset 协议，原始路径留在 data-local-path）→ 可在资源管理器中显示
+ *   外链占位块（红线 4，尚未点击加载，地址在 data-external-image）→ 只给地址
+ *   用户点过「点击加载」后的真 img → 按外链处理（只认 http(s)，data:/asset: 复制出去没意义）
+ */
+function readImageTarget(target: Element): ImageTarget | null {
+  const local = target.closest<HTMLElement>("img[data-local-path]");
+  if (local !== null) {
+    const path = local.dataset.localPath ?? "";
+    if (path !== "") {
+      return { kind: "local", path };
+    }
+  }
+
+  const placeholder = target.closest<HTMLElement>("[data-external-image]");
+  if (placeholder !== null) {
+    const url = placeholder.getAttribute("data-external-image") ?? "";
+    if (url !== "") {
+      return { kind: "external", url };
+    }
+  }
+
+  const image = target.closest("img");
+  if (image instanceof HTMLImageElement) {
+    const source = (image.getAttribute("src") ?? "").trim();
+    if (EXTERNAL_HREF_RE.test(source)) {
+      return { kind: "external", url: source };
+    }
+  }
+  return null;
+}
+
+/** 打开中的右键菜单：同一时刻只有一个，key 自增用于整体重挂（子菜单与焦点随之归零） */
+interface ContextMenuState {
+  readonly key: number;
+  readonly x: number;
+  readonly y: number;
+  /** role=menu 的无障碍名 */
+  readonly label: string;
+  readonly items: readonly MenuNode[];
 }
 
 /* ── 图标：内联手绘，不引依赖。三档尺寸 16/14/12，描边 1.5，色用 currentColor ── */
@@ -879,6 +1057,8 @@ function RecentRow({ entry, selected, missing, onOpen }: RecentRowProps) {
       type="button"
       title={file.path}
       aria-current={selected ? "true" : undefined}
+      // 右键菜单的命中标记（附录 A.2 最近文件那一套）：App 的 contextmenu 委托按它取条目
+      data-recent-path={file.path}
       onClick={() => onOpen(file.path)}
       className={`flex h-row w-full items-center gap-1.5 rounded-row px-2 text-left hover:bg-hover ${
         selected ? "bg-hover" : ""
@@ -1427,6 +1607,13 @@ export default function App() {
    * 放 ref 而非 state：它不参与渲染，进 state 只会多一轮无谓的重绘。
    */
   const pendingAnchor = useRef<{ path: string; hash: string } | null>(null);
+  /**
+   * 打开中的右键菜单（3.2）。同一时刻只允许一个，所以用**一个** state 承载：
+   * 换菜单就是换 key，ContextMenu 整体重挂，展开的子菜单与焦点位置随之归零，
+   * 不需要另写一套重置逻辑。
+   */
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const contextMenuKey = useRef(0);
 
   const { path, source, revision, silentRefresh, encoding, isLarge } = session;
 
@@ -1687,6 +1874,10 @@ export default function App() {
   /** 状态栏月亮钮：跟随系统 → 浅色 → 深色 → 跟随系统 */
   const cycleTheme = useCallback(() => {
     useSettingsStore.getState().cycleTheme();
+  }, []);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
   }, []);
 
   /** 失效路径回填（1.8）：探测逻辑在 store，这里只负责挑时机 */
@@ -1982,6 +2173,148 @@ export default function App() {
     };
   }, [handleReadingActivate]);
 
+  /* ── 右键菜单委托（3.2 / 附录 A）：按命中目标选四套之一 ── */
+
+  useEffect(() => {
+    const warn = (error: unknown): void => {
+      console.warn("[app] context menu action failed", error);
+    };
+
+    const onContextMenu = (event: MouseEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      // 输入框 / 可编辑区：放行且**不** preventDefault，把系统菜单还给用户（粘贴、输入法）
+      if (target.closest(NATIVE_MENU_SELECTOR) !== null) {
+        return;
+      }
+      // 已打开的菜单自身：吃掉事件，不叠开第二个
+      if (target.closest(CONTEXT_MENU_SELECTOR) !== null) {
+        event.preventDefault();
+        return;
+      }
+
+      const selectionText = readSelectionText();
+      const session = useFileSessionStore.getState();
+      const settings = useSettingsStore.getState();
+
+      // 动作在这里现场绑定：选区文本必须是**右键那一刻**的快照，
+      // 菜单打开期间焦点会移进菜单，晚一步去读选区就可能已经变了
+      const actions: ContextMenuActions = {
+        copyText: (text) => {
+          void writeClipboard(text);
+        },
+        copySelection: () => {
+          void writeClipboard(selectionText);
+        },
+        copySelectionPlain: () => {
+          void writeClipboard(toPlainText(selectionText));
+        },
+        copySource: () => {
+          void writeClipboard(useFileSessionStore.getState().source);
+        },
+        revealPath: (filePath) => {
+          void revealInExplorer(filePath).catch(warn);
+        },
+        openWithDefaultApp: (filePath) => {
+          void openWithDefaultApp(filePath).catch(warn);
+        },
+        openExternalUrl: (url) => {
+          void openExternal(url).catch(warn);
+        },
+        openDocument: (filePath, hash) => {
+          openDocumentAt(filePath, hash);
+        },
+        setZoom: (percent) => {
+          useSettingsStore.getState().setZoomPercent(percent);
+        },
+        resetZoom: () => {
+          useSettingsStore.getState().resetZoom();
+        },
+        setTheme: (next) => {
+          useSettingsStore.getState().setTheme(next);
+        },
+        openRecent: (filePath) => {
+          openPath(filePath);
+        },
+        toggleRecentPinned: (filePath) => {
+          useRecentFilesStore.getState().togglePin(filePath);
+        },
+        removeRecent: (filePath) => {
+          useRecentFilesStore.getState().remove(filePath);
+        },
+      };
+
+      const base = {
+        hasSelection: selectionText.trim() !== "",
+        documentPath: session.path,
+        zoomPercent: settings.zoomPercent,
+        theme: settings.theme,
+        actions,
+      };
+
+      let label: string | null = null;
+      let items: readonly MenuNode[] | null = null;
+
+      const recentRow = target.closest<HTMLElement>("[data-recent-path]");
+      if (recentRow !== null) {
+        const rowPath = recentRow.dataset.recentPath ?? "";
+        const file = useRecentFilesStore
+          .getState()
+          .items.find((item) => samePath(item.path, rowPath));
+        if (file !== undefined) {
+          label = t.contextMenu.labelRecent;
+          items = buildRecentMenu({ file, actions });
+        }
+      } else if (target.closest("[data-reading-root]") !== null) {
+        // 先把焦点确定地放到阅读区：菜单关闭时要「归还触发元素」，
+        // 而右键落在正文上时焦点可能还在别处（甚至是 body），归还就成了空转，
+        // 键盘翻页会在关菜单后失灵。选区不受 focus 影响，复制照常。
+        focusReading();
+        // 链接优先于图片：README 里的 `[![badge](img)](url)` 结构，用户要的是链接动作
+        const link = readLinkTarget(target, session.path);
+        const image = link === null ? readImageTarget(target) : null;
+        if (link !== null) {
+          label = t.contextMenu.labelLink;
+          items = buildLinkMenu({ ...base, link });
+        } else if (image !== null) {
+          label = t.contextMenu.labelImage;
+          items = buildImageMenu({ ...base, image });
+        } else {
+          label = t.contextMenu.labelDocument;
+          items = buildDocumentMenu(base);
+        }
+      }
+
+      // 顶栏 / 状态栏 / 大纲等外壳区域：附录 A 未定义菜单，不弹自绘菜单。
+      //
+      // 但**必须 preventDefault**：WebView2 的默认菜单现在是开着的（只为把系统菜单
+      // 还给输入框，见 lib.rs 的 SetAreDefaultContextMenusEnabled(true)），
+      // 这里不拦就会在外壳上冒出「刷新 / 另存为 / 检查」的网页菜单——
+      // 那正是用户最初投诉的东西。输入框的放行在本函数更早处已单独处理。
+      if (label === null || items === null || items.length === 0) {
+        event.preventDefault();
+        return;
+      }
+
+      event.preventDefault();
+      contextMenuKey.current += 1;
+      setContextMenu({
+        key: contextMenuKey.current,
+        x: event.clientX,
+        y: event.clientY,
+        label,
+        items,
+      });
+    };
+
+    window.addEventListener("contextmenu", onContextMenu);
+    return () => {
+      window.removeEventListener("contextmenu", onContextMenu);
+    };
+  }, [focusReading, openDocumentAt, openPath]);
+
   /* ── 渲染管线：revision 变化（含同路径重载）即重渲染 ── */
 
   useEffect(() => {
@@ -2146,6 +2479,16 @@ export default function App() {
       />
 
       {dragOverlay ? <DragOverlay supported={dragSupported} /> : null}
+
+      {contextMenu === null ? null : (
+        <ContextMenu
+          key={contextMenu.key}
+          anchor={{ x: contextMenu.x, y: contextMenu.y }}
+          items={contextMenu.items}
+          label={contextMenu.label}
+          onClose={closeContextMenu}
+        />
+      )}
     </div>
   );
 }

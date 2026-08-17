@@ -115,6 +115,67 @@ export const zhCN = {
     placeholder: "—",
   },
 
+  /**
+   * 应用内右键菜单四套（UPGRADE_PLAN 附录 A 是唯一规格源，条目排布见
+   * src/components/contextMenuItems.ts —— 那里逐组对照附录 A 的 ASCII 图）。
+   *
+   * 命名规则：键名按「附录 A 里出现的位置」分组排列，方便与规格逐行对拍；
+   * 与 common 完全同义的文案（复制 / 打开所在文件夹 / 复制文件路径 / 从列表移除）
+   * **不在这里重复定义**，条目层直接取 common，避免两处文案漂移。
+   */
+  contextMenu: {
+    /* 四套菜单的无障碍名（role=menu 的 aria-label，屏幕阅读器用来报"这是哪套菜单"） */
+    labelDocument: "正文右键菜单",
+    labelLink: "链接右键菜单",
+    labelImage: "图片右键菜单",
+    labelRecent: "最近文件右键菜单",
+
+    /* 复制组（正文 / 链接 / 图片菜单共用） */
+    copyPlain: "复制为纯文本",
+    copySource: "复制全文 Markdown 源",
+
+    /* 导出与分享组（导出 M2 / 分享与 Obsidian M3，本批次全部置灰） */
+    export: "导出",
+    exportHtml: "HTML",
+    exportPdf: "PDF",
+    exportLongImage: "长图 PNG",
+    share: "分享",
+    shareWechatImage: "微信长图",
+    shareWechatRich: "公众号富文本",
+    shareFeishu: "飞书",
+    shareDingtalk: "钉钉",
+    importObsidian: "导入 Obsidian…",
+
+    /* 打开方式组 */
+    openInBrowser: "在浏览器中打开",
+    openWithEditor: "用其他编辑器打开源文件",
+    revealInExplorer: "在资源管理器中显示",
+    print: "打印…",
+
+    /* 视图组 */
+    zen: "禅模式",
+    /** 缩放子菜单的父项：括号里带当前档位（如「缩放（125%）」） */
+    zoomWith: (percent: number): string => `缩放（${percent}%）`,
+    zoomReset: "重置",
+    theme: "主题",
+
+    /* 关于组 */
+    about: "关于 MDNaonao",
+
+    /* 链接菜单（外链与本地 .md 二选一） */
+    openLinkInBrowser: "在浏览器中打开该链接",
+    openLinkInApp: "在本应用中打开",
+    copyLinkAddress: "复制链接地址",
+
+    /* 图片菜单 */
+    copyImageAddress: "复制图片地址",
+
+    /* 左栏最近文件条目菜单 */
+    openRecent: "打开",
+    pin: "置顶",
+    unpin: "取消置顶",
+  },
+
   common: {
     open: "打开文件",
     confirm: "确定",
