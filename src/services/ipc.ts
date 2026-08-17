@@ -18,6 +18,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type {
   DefaultAppStatus,
@@ -177,6 +178,40 @@ export async function openFileDialog(): Promise<string | null> {
   throw new Error(
     "openFileDialog 未就绪：需先引入 tauri-plugin-dialog（红线 12：新增运行时依赖需人类批准）",
   );
+}
+
+/* ── 窗口控制（DG 6.2 自绘标题栏三键） ─────────────────────── */
+/* 走 @tauri-apps/api/window 而非自定义 command：这些是 Tauri 内置能力，
+   对应权限见 capabilities/default.json 的 core:window:allow-*。 */
+
+/** 最小化窗口 */
+export async function windowMinimize(): Promise<void> {
+  return getCurrentWindow().minimize();
+}
+
+/** 最大化 / 还原切换（顶栏空白区双击是 Tauri 内置行为，无需接管） */
+export async function windowToggleMaximize(): Promise<void> {
+  return getCurrentWindow().toggleMaximize();
+}
+
+/** 关闭窗口 */
+export async function windowClose(): Promise<void> {
+  return getCurrentWindow().close();
+}
+
+/** 当前是否为最大化态（用于切换按钮图标：方框 ⇄ 双层方框） */
+export async function windowIsMaximized(): Promise<boolean> {
+  return getCurrentWindow().isMaximized();
+}
+
+/** 订阅窗口尺寸变化，回调最大化状态；用于图标随窗口状态同步 */
+export async function onWindowResized(
+  handler: (maximized: boolean) => void,
+): Promise<UnlistenFn> {
+  const win = getCurrentWindow();
+  return win.onResized(() => {
+    void win.isMaximized().then(handler);
+  });
 }
 
 /* ── 事件封装（同样禁止组件直接使用 @tauri-apps/api/event） ──── */

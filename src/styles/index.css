@@ -1,6 +1,13 @@
 /**
- * 全局样式入口：Token 定义 + Tailwind 指令 + 基础重置 + 滚动条。
- * 阅读区排版（DG 5.4）不在此实现——它属于渲染管线的样式层（M0-② / M1）。
+ * 全局样式入口 —— 基础层（Base Layer）。
+ *
+ * 职责边界：
+ *   本文件 = Token 引入 + Tailwind 三条指令 + 基础重置 + 滚动条 + 焦点/选中/降级动效。
+ *   颜色与尺寸的定义在 src/styles/tokens.css，类名映射在 tailwind.config.js，本文件都不重复定义。
+ *   阅读区排版（正文/标题/代码块的字号行高与间距）属于渲染管线的样式层（M0-② / M1），不在此实现。
+ *
+ * 全文的取值依据来自对参考项目 DeepSeek Harness 客户端的实测提取，
+ * 每段注释标注了出处，改动前请先确认参考项目里的对应实现。
  */
 
 @import "./tokens.css";
@@ -10,54 +17,71 @@
 @tailwind utilities;
 
 @layer base {
+  /* ── color-scheme 同步 ──────────────────────────────────────
+     依据：参考项目在 html 上同时切 data-theme 与 color-scheme。
+     这一句决定了「原生」部件的明暗：WebView2 的默认滚动条、<select> 下拉面板、
+     日期选择器、autofill 底色、以及 canvas 之外未被 CSS 覆盖的系统 UI。
+     不写的话深色主题下会出现一条惨白的原生滚动条，是最容易露馅的地方。
+     :root 用 `light dark` 表示「跟随系统」，显式主题时收敛到单值。 */
+  :root {
+    color-scheme: light dark;
+
+    /* 滚动条 thumb 的可覆盖入口：
+       默认绑到 tokens 的 --md-scrollbar-thumb / -hover，
+       容器（如 .quiet-bars）只需在自己作用域里重绑这两个变量即可局部改写，
+       不必再写一遍 ::-webkit-scrollbar-* 选择器。 */
+    --md-scroll-thumb: var(--md-scrollbar-thumb);
+    --md-scroll-thumb-hover: var(--md-scrollbar-thumb-hover);
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+  }
+
+  /* ── 外壳骨架 ───────────────────────────────────────────────
+     桌面应用外壳：整窗不滚动，滚动一律由内部具体容器（左栏 / 阅读区 / 大纲栏）接管。
+     overflow:hidden 必须同时给 html 和 body，只给一个在 WebView2 里仍会出现整页回弹。 */
   html,
   body,
   #root {
     height: 100%;
+    overflow: hidden;
   }
 
   body {
     margin: 0;
-    background-color: var(--color-bg-canvas);
-    color: var(--color-text-primary);
-    font-family: var(--font-ui);
+    background-color: var(--md-bg-canvas);
+    color: var(--md-text-primary);
+    font-family: var(--md-font-ui);
+    /* 基准字号 = UI chrome 的 text-ui（14/22），与 tailwind.config 的 fontSize.ui 一致 */
     font-size: 14px;
-    line-height: 1.5;
+    line-height: 22px;
+    /* 字形渲染：参考项目两条都开。缺了这两行，同样的色值在 Windows 上会显得更重更脏，
+       是「不像」的隐形来源之一。 */
     -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
-    /* 桌面应用外壳观感：外壳区域不可选中；阅读区单独放开（见下） */
+    -moz-osx-font-smoothing: grayscale;
+    /* 桌面应用观感：外壳区域不可选中（阅读区单独放开，见下） */
     user-select: none;
-    /* 禁用整页橡皮筋/双指后退，阅读区滚动由自身容器接管 */
+    /* 禁用整页橡皮筋与双指侧滑后退 */
     overscroll-behavior: none;
   }
 
-  /* 阅读区内容必须可选中、可复制（FR-19） */
+  /* 阅读区内容必须可选中、可复制（FR-19），由渲染层加 data-reading-root 标记 */
   [data-reading-root],
   [data-reading-root] * {
     user-select: text;
   }
 
-  /* 严格只读：整窗禁用原生拖放默认行为，拖入 .md 的处理由应用接管（FR-13） */
+  /* 严格只读外壳：禁掉图片的原生拖拽，拖入 .md 的行为由应用自己接管（FR-13） */
   img {
     -webkit-user-drag: none;
   }
 
-  /* 焦点可见性（DG 6.5 焦点管理 / 6.7）：仅键盘触发时显示 2px 品牌描边 */
-  :focus {
-    outline: none;
-  }
-
-  :focus-visible {
-    outline: 2px solid var(--color-brand);
-    outline-offset: 2px;
-    border-radius: var(--radius-sm);
-  }
-
-  ::selection {
-    background-color: var(--color-brand-soft);
-  }
-
-  /* 表单元件继承 Token 字体，避免 WebView2 默认字体串味 */
+  /* 表单元件继承 Token 字体，否则 WebView2 会回落到系统默认字体，中英文都串味 */
   button,
   input,
   select,
@@ -65,27 +89,55 @@
     font: inherit;
     color: inherit;
   }
-}
 
-@layer utilities {
-  /* 单行截断（左栏文件名等），配合 title 属性给完整文本 */
-  .truncate-line {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
+  /* ── 焦点策略 ───────────────────────────────────────────────
+     铁律：鼠标操作不出现焦点表达，只有键盘导航（:focus-visible）才给。
+     用 box-shadow 而不是 outline —— outline 会画在元素盒子外并撑破行边界，
+     在 32px 行高的列表里会顶到相邻行；box-shadow 不参与布局，且自动贴合圆角。 */
+  :focus {
+    outline: none;
+  }
+
+  :focus-visible {
+    outline: none;
+    /* 与 tailwind.config 的 shadow-focus 同配方：0 0 0 2px accent。
+       焦点环用 accent（蓝），不是 brand（近黑/近白）—— 蓝色只用于链接/焦点/进度。 */
+    box-shadow: 0 0 0 2px var(--md-accent);
+  }
+
+  /* 输入框例外：聚焦只把描边换成 brand，不加环、不发光（设计铁律 6）。
+     需要同样表现的自定义控件加 data-focus="border" 即可复用这条。 */
+  input:focus,
+  input:focus-visible,
+  textarea:focus,
+  textarea:focus-visible,
+  select:focus,
+  select:focus-visible,
+  [data-focus="border"]:focus-visible {
+    outline: none;
+    box-shadow: none;
+    border-color: var(--md-brand);
+  }
+
+  /* ── 文本选中 ───────────────────────────────────────────────
+     用 accent-soft 作底（浅色 #e4edfd / 深色 #34415b），文字保持 primary。
+     显式写 color 是因为浏览器默认会把选中文字强制成系统色，深色主题下会变成黑字。 */
+  ::selection {
+    background-color: var(--md-accent-soft);
+    color: var(--md-text-primary);
   }
 }
 
-/* ── 滚动条（DG 6.4-10：8px 半透明细窄条，hover 加深加宽至 10px） ──
-   「滚动停止 1s 后淡出」需要 JS 参与，留到 M1 与阅读区一起实现。 */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
-}
+/* ══════════════════════════════════════════════════════════════
+   滚动条
+   依据：参考项目 scrollbar.css —— 宽 8px、thumb 圆角 4px、轨道完全透明、
+   corner 透明、hover 时只把 thumb 加深一档（不变宽、不加边框、不加过渡）。
+   刻意不给 thumb 加 transition：与 hover 背景瞬时切换保持一致的手感。
+   ══════════════════════════════════════════════════════════════ */
 
 ::-webkit-scrollbar {
-  width: var(--scrollbar-size);
-  height: var(--scrollbar-size);
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -93,14 +145,85 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: var(--color-border);
-  border-radius: var(--radius-sm);
+  border-radius: 4px;
+  background: var(--md-scroll-thumb);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: var(--color-text-secondary);
+  background: var(--md-scroll-thumb-hover);
 }
 
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+/* Firefox 路径必须与 webkit 路径互斥。
+   原因：`::-webkit-scrollbar` 与 `scrollbar-width/​scrollbar-color` 若写在同一条规则里，
+   Chromium 在识别到标准属性后会优先走标准实现并丢弃 webkit 伪元素样式，
+   结果是两边都退化成默认滚动条。用 @supports not selector(::-webkit-scrollbar) 做分流：
+   Chromium 能解析该伪元素 → 条件为假 → 整块跳过；Firefox 解析失败 → 条件为真 → 只走这块。
+   注意 Firefox 只有 thin/auto 两档宽度、且没有 hover 态，这是平台限制不是简化。 */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--md-scroll-thumb) transparent;
+  }
+}
+
+@layer utilities {
+  /* ── .quiet-bars：安静滚动条（左栏 / 大纲栏用） ───────────────
+     指针不在容器内时把 thumb 变透明，指针进入才显形。
+     关键：是「透明」不是 display:none / width:0 ——
+     滚动条一旦真的消失，内容宽度会变化，列表行里的文字会横向抖一下；
+     保持占位（配合 scrollbar-gutter: stable）能让显隐完全不引起重排。
+     transition 也不加：与全站 hover 瞬时切换一致。 */
+  .quiet-bars {
+    scrollbar-gutter: stable;
+  }
+
+  .quiet-bars::-webkit-scrollbar-thumb {
+    background: transparent;
+  }
+
+  .quiet-bars:hover::-webkit-scrollbar-thumb {
+    background: var(--md-scroll-thumb);
+  }
+
+  .quiet-bars:hover::-webkit-scrollbar-thumb:hover {
+    background: var(--md-scroll-thumb-hover);
+  }
+
+  /* 单行截断（左栏文件名、大纲标题等）。用类而不是 Tailwind 的 truncate，
+     是为了在 flex 子项上配合 min-w-0 使用时语义更直白；记得同时给 title 属性放完整文本。 */
+  .truncate-line {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+}
+
+/* Firefox 下的 .quiet-bars：同样走互斥分流，thumb 用 transparent 关键字 */
+@supports not selector(::-webkit-scrollbar) {
+  .quiet-bars {
+    scrollbar-color: transparent transparent;
+  }
+
+  .quiet-bars:hover {
+    scrollbar-color: var(--md-scroll-thumb) transparent;
+  }
+}
+
+/* ── 降级动效 ─────────────────────────────────────────────────
+   系统开启「减少动态效果」时把所有动画/过渡时长归零。
+   用 0.01ms 而非 0s：时长为 0 的过渡不会触发 transitionend，
+   依赖该事件收尾的组件（如动画结束后卸载浮层）会永远等不到回调。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

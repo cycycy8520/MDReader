@@ -48,6 +48,10 @@ module.exports = {
             name: "@tauri-apps/api/event",
             message: "禁止直接收发事件，请在 src/services/ipc.ts 中封装后使用。",
           },
+          {
+            name: "@tauri-apps/api/window",
+            message: "禁止直接操作窗口，请在 src/services/ipc.ts 中封装后使用。",
+          },
         ],
       },
     ],

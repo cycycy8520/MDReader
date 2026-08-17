@@ -1,355 +1,621 @@
 /**
- * 应用外壳骨架 —— 严格按 DG 5.1 线框 + DG 5.2 区域规格搭建：
- *   顶栏 44px（自绘、整条为拖动区）/ 左栏 260px / 阅读区（内容列宽 760px 居中）
- *   / 大纲面板 240px（此处展示钉住态）/ 状态栏 26px。
+ * 应用外壳 —— 视觉规格来自对参考项目（DeepSeek Harness 客户端）设计系统的实测提取，
+ * 数值一律走 src/styles/tokens.css 的两层 Token，本文件只写语义类名。
  *
- * M0 阶段只有布局与主题变量，不接任何功能：按钮无行为、列表为占位骨架。
- * 交互与状态在 M1 由 stores + 各组件接管（届时本文件拆分为 components/ 下的组件）。
+ * 关键数值（与 tailwind.config.js 的 Token 映射一一对应）：
+ *   顶栏 40px / 状态栏 26px / 左栏 280px / 大纲栏 300px / 阅读列宽 748px
+ *   行高 32px（文件条目）、34px（分组标题）、输入框 32px、主按钮 36px、图标钮 28px
+ *   圆角 6/8/12/18/24；字号 14-22、13-20、12-18（UI）与 22-32（Hero 标题）
+ *   左栏外壳内边距 12px/6px；阅读区 32px/16px；列表底部渐隐 24px
+ *
+ * 交互纪律（违反就"不像"）：
+ *   1. hover / 选中背景**不加 transition**，瞬时切换；过渡只给 opacity、transform、布局尺寸
+ *   2. 交互反馈只换背景色：无 scale、无位移、无阴影抬升、无 ring-offset
+ *   3. 列表选中态 = hover 同一枚半透明底色 + 8px 圆角整块高亮，无竖条、无边框、不加粗
+ *   4. 主按钮是近黑/近白（brand），蓝色（accent）只留给链接 / 焦点环 / 进度
+ *   5. 图标恒比同行文字淡一档（文字 primary → 图标 tertiary，hover 才升一档）
+ *   6. 输入框聚焦只把描边换成 border-brand，无外发光
+ *   7. 空状态就是一行 13/20 的 tertiary 文字，不画插画、不做骨架屏
+ *   9. 图标只有 16/14/12 三档，stroke-width 1.5，颜色一律 currentColor
+ *
+ * M0 阶段不接任何业务功能：未实现的按钮不写 onClick；左栏列表为视觉占位数据
+ * （M0_SAMPLE_GROUPS），M1 由 recentFiles store 接管后删除。
+ * 窗口三键、侧栏 / 大纲栏的显隐是纯外壳能力，已实装。
  */
 
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { t } from "./i18n/zh-CN";
+import {
+  onWindowResized,
+  windowClose,
+  windowIsMaximized,
+  windowMinimize,
+  windowToggleMaximize,
+} from "./services/ipc";
 
-/* ── 图标：Lucide 风格线性 1.5px 描边（DG 5.8），M0 内联手绘，避免引入依赖 ── */
+/* ── 图标：内联手绘，不引依赖。三档尺寸 16/14/12，描边 1.5，色用 currentColor ── */
 
-const iconProps = {
-  width: 16,
-  height: 16,
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 1.5,
-  strokeLinecap: "round",
-  strokeLinejoin: "round",
-  "aria-hidden": true,
-} as const;
+type IconSize = 12 | 14 | 16;
 
-function IconMenu() {
+interface IconProps {
+  readonly size?: IconSize;
+  readonly className?: string;
+}
+
+function Glyph({
+  size = 16,
+  className,
+  children,
+}: IconProps & { readonly children: ReactNode }) {
   return (
-    <svg {...iconProps}>
-      <path d="M3 6h18M3 12h18M3 18h18" />
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className={className}
+    >
+      {children}
     </svg>
   );
 }
 
-function IconSearch() {
+/** 折叠 / 展开左栏：面板轮廓 + 分栏线，比汉堡更贴合语义 */
+function IconPanelLeft(props: IconProps) {
   return (
-    <svg {...iconProps}>
+    <Glyph {...props}>
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <path d="M9.5 4v16" />
+    </Glyph>
+  );
+}
+
+function IconSearch(props: IconProps) {
+  return (
+    <Glyph {...props}>
       <circle cx="11" cy="11" r="7" />
-      <path d="m20 20-3.5-3.5" />
-    </svg>
+      <path d="m20 20-3.6-3.6" />
+    </Glyph>
   );
 }
 
-function IconOutline() {
+function IconOutline(props: IconProps) {
   return (
-    <svg {...iconProps}>
-      <path d="M4 6h16M7 12h13M10 18h10M4 12h.01M7 18h.01" />
-    </svg>
+    <Glyph {...props}>
+      <path d="M4 6h16M7 12h13M10 18h10" />
+      <path d="M4 12h.01M7 18h.01" />
+    </Glyph>
   );
 }
 
-function IconExport() {
+function IconExport(props: IconProps) {
   return (
-    <svg {...iconProps}>
-      <path d="M12 3v11m0 0 4-4m-4 4-4-4" />
-      <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
-    </svg>
+    <Glyph {...props}>
+      <path d="M12 15V4m0 0-3.5 3.5M12 4l3.5 3.5" />
+      <path d="M4.5 15v3a2.5 2.5 0 0 0 2.5 2.5h10a2.5 2.5 0 0 0 2.5-2.5v-3" />
+    </Glyph>
   );
 }
 
-function IconShare() {
+function IconShare(props: IconProps) {
   return (
-    <svg {...iconProps}>
+    <Glyph {...props}>
       <circle cx="18" cy="5" r="2.5" />
       <circle cx="6" cy="12" r="2.5" />
       <circle cx="18" cy="19" r="2.5" />
       <path d="m8.3 10.8 7.4-4.3M8.3 13.2l7.4 4.3" />
-    </svg>
+    </Glyph>
   );
 }
 
-function IconMore() {
+/** 更多（⋯）：三点用实心，线框圆环在 16px 下会糊成一团 */
+function IconMore(props: IconProps) {
   return (
-    <svg {...iconProps}>
-      <circle cx="5" cy="12" r="1" />
-      <circle cx="12" cy="12" r="1" />
-      <circle cx="19" cy="12" r="1" />
-    </svg>
+    <Glyph {...props}>
+      <circle cx="5.5" cy="12" r="1.25" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.25" fill="currentColor" stroke="none" />
+      <circle cx="18.5" cy="12" r="1.25" fill="currentColor" stroke="none" />
+    </Glyph>
   );
 }
 
-/* ── 小组件 ─────────────────────────────────────────────────── */
-
-interface ToolButtonProps {
-  label: string;
-  children: ReactNode;
+/** 三角箭头：默认指右（收起），展开时由调用方 rotate-90 指下 */
+function IconChevron(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <path d="m9.5 5 7 7-7 7" />
+    </Glyph>
+  );
 }
 
-/** 顶栏图标按钮：图标 + 文字并列，带 aria-label（DG 6.7） */
-function ToolButton({ label, children }: ToolButtonProps) {
+function IconFile(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5L13.5 3Z" />
+      <path d="M13.5 3v5.5H19" />
+    </Glyph>
+  );
+}
+
+function IconClose(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </Glyph>
+  );
+}
+
+function IconMinimize(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <path d="M5 12h14" />
+    </Glyph>
+  );
+}
+
+function IconMaximize(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <rect x="5.5" y="5.5" width="13" height="13" rx="1.5" />
+    </Glyph>
+  );
+}
+
+function IconRestore(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <rect x="7.5" y="7.5" width="11" height="11" rx="1.5" />
+      <path d="M5.5 16V6.5A1.5 1.5 0 0 1 7 5h9" />
+    </Glyph>
+  );
+}
+
+function IconMoon(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <path d="M20 14.3A8.5 8.5 0 0 1 9.7 4a8.5 8.5 0 1 0 10.3 10.3Z" />
+    </Glyph>
+  );
+}
+
+/* ── 通用小件 ───────────────────────────────────────────────── */
+
+interface IconButtonProps {
+  readonly label: string;
+  readonly children: ReactNode;
+  /** 未实现的功能不传，按钮保持无行为（不写 alert 之类占位） */
+  readonly onClick?: () => void;
+  readonly active?: boolean;
+  readonly className?: string;
+}
+
+/**
+ * 幽灵图标钮 28px 圆形：反馈只有背景色，且不加 transition（铁律 1 / 2）。
+ * 图标常态 tertiary，hover 升一档到 secondary（铁律 5）。
+ */
+function IconButton({
+  label,
+  children,
+  onClick,
+  active = false,
+  className = "",
+}: IconButtonProps) {
   return (
     <button
       type="button"
       aria-label={label}
       title={label}
-      className="flex h-7 items-center gap-1.5 rounded-sm px-2 text-xs text-secondary transition-colors duration-hover ease-standard hover:bg-brand-soft hover:text-primary"
+      aria-pressed={onClick ? active : undefined}
+      onClick={onClick}
+      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full hover:bg-hover hover:text-secondary ${
+        active ? "bg-hover text-secondary" : "text-tertiary"
+      } ${className}`}
     >
       {children}
-      <span>{label}</span>
     </button>
   );
 }
 
-/** 窗口控制三键（DG 6.2 自绘标题栏）；关闭键 hover 为 danger 色 */
+/* ── 顶栏 ───────────────────────────────────────────────────── */
+
+/** 窗口三键：宽 44px、满高；关闭键 hover 为 danger 实底 + 白字 */
 function WindowControls() {
+  const [maximized, setMaximized] = useState(false);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void windowIsMaximized().then(setMaximized);
+    void onWindowResized(setMaximized).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  const base =
+    "flex h-topbar w-11 shrink-0 items-center justify-center text-tertiary";
+
   return (
     <div className="flex items-center">
       <button
         type="button"
         aria-label={t.window.minimize}
-        className="flex h-topbar w-11 items-center justify-center text-secondary transition-colors duration-hover hover:bg-brand-soft hover:text-primary"
+        title={t.window.minimize}
+        onClick={() => void windowMinimize()}
+        className={`${base} hover:bg-hover hover:text-primary`}
       >
-        <svg {...iconProps}>
-          <path d="M5 12h14" />
-        </svg>
+        <IconMinimize />
       </button>
       <button
         type="button"
-        aria-label={t.window.maximize}
-        className="flex h-topbar w-11 items-center justify-center text-secondary transition-colors duration-hover hover:bg-brand-soft hover:text-primary"
+        aria-label={maximized ? t.window.restore : t.window.maximize}
+        title={maximized ? t.window.restore : t.window.maximize}
+        onClick={() => void windowToggleMaximize()}
+        className={`${base} hover:bg-hover hover:text-primary`}
       >
-        <svg {...iconProps}>
-          <rect x="5.5" y="5.5" width="13" height="13" rx="1.5" />
-        </svg>
+        {maximized ? <IconRestore /> : <IconMaximize />}
       </button>
       <button
         type="button"
         aria-label={t.window.close}
-        className="flex h-topbar w-11 items-center justify-center text-secondary transition-colors duration-hover hover:bg-danger hover:text-primary"
+        title={t.window.close}
+        onClick={() => void windowClose()}
+        className={`${base} hover:bg-danger hover:text-white`}
       >
-        <svg {...iconProps}>
-          <path d="M6 6l12 12M18 6 6 18" />
-        </svg>
+        <IconClose />
       </button>
     </div>
   );
 }
 
-/** 左栏条目占位骨架：M1 由 recentFiles store 渲染真实条目（DG 5.3） */
-function SidebarPlaceholderRow({ active = false }: { active?: boolean }) {
+interface TopBarProps {
+  readonly onToggleSidebar: () => void;
+  readonly onToggleOutline: () => void;
+  readonly outlineOpen: boolean;
+}
+
+/**
+ * 顶栏 40px：整条为拖动区（data-tauri-drag-region 不作用于子元素，按钮天然可点）。
+ * 底部分隔线用 ::after 画而非 border-b —— 后续加 tab 激活条时两者不会打架。
+ */
+function TopBar({ onToggleSidebar, onToggleOutline, outlineOpen }: TopBarProps) {
   return (
-    <div
-      aria-hidden
-      className={`flex flex-col gap-1.5 rounded-sm px-2 py-2 ${
-        active ? "border-l-[3px] border-brand bg-brand-soft" : "border-l-[3px] border-transparent"
-      }`}
+    <header
+      data-tauri-drag-region
+      className="relative flex h-topbar shrink-0 items-center bg-panel pl-1.5 after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[var(--md-border-l2)] after:content-['']"
     >
-      <div className="h-3 w-3/4 rounded-sm bg-card" />
-      <div className="h-2.5 w-1/2 rounded-sm bg-card opacity-60" />
+      <div data-tauri-drag-region className="flex shrink-0 items-center gap-2">
+        <IconButton label={t.topbar.toggleSidebar} onClick={onToggleSidebar}>
+          <IconPanelLeft />
+        </IconButton>
+        <span
+          data-tauri-drag-region
+          className="text-ui font-medium text-primary"
+        >
+          {t.app.name}
+        </span>
+      </div>
+
+      <div
+        data-tauri-drag-region
+        className="flex min-w-0 flex-1 items-center justify-center px-4"
+      >
+        <span
+          data-tauri-drag-region
+          className="truncate text-ui-sm text-tertiary"
+        >
+          {t.topbar.untitled}
+        </span>
+      </div>
+
+      <nav className="flex shrink-0 items-center gap-0.5 pr-1.5">
+        <IconButton label={t.topbar.find}>
+          <IconSearch />
+        </IconButton>
+        <IconButton
+          label={t.topbar.outline}
+          onClick={onToggleOutline}
+          active={outlineOpen}
+        >
+          <IconOutline />
+        </IconButton>
+        <IconButton label={t.topbar.export}>
+          <IconExport />
+        </IconButton>
+        <IconButton label={t.topbar.share}>
+          <IconShare />
+        </IconButton>
+        <IconButton label={t.topbar.more}>
+          <IconMore />
+        </IconButton>
+      </nav>
+
+      <WindowControls />
+    </header>
+  );
+}
+
+/* ── 左栏 ───────────────────────────────────────────────────── */
+
+interface RecentEntry {
+  readonly id: string;
+  readonly name: string;
+  /** 已格式化的时间戳文本；M1 由 RecentFile.lastOpenedAt 计算 */
+  readonly time: string;
+}
+
+interface RecentGroup {
+  readonly id: string;
+  readonly label: string;
+  readonly entries: readonly RecentEntry[];
+}
+
+/**
+ * M0 视觉占位数据：只为让外壳能被目测验收。
+ * M1 接入 services/ipc.listRecent() 后，本常量与 i18n 的 sidebar.sample 一并删除。
+ */
+const M0_SAMPLE_GROUPS: readonly RecentGroup[] = [
+  {
+    id: "pinned",
+    label: t.sidebar.groupPinned,
+    entries: [{ id: "p-readme", name: t.sidebar.sample.readme, time: "14:32" }],
+  },
+  {
+    id: "today",
+    label: t.sidebar.groupToday,
+    entries: [
+      { id: "t-guide", name: t.sidebar.sample.guide, time: "13:05" },
+      { id: "t-api", name: t.sidebar.sample.api, time: "11:47" },
+      { id: "t-meeting", name: t.sidebar.sample.meeting, time: "09:18" },
+    ],
+  },
+  {
+    id: "earlier",
+    label: t.sidebar.groupEarlier,
+    entries: [
+      { id: "e-changelog", name: t.sidebar.sample.changelog, time: "08-15" },
+      { id: "e-design", name: t.sidebar.sample.design, time: "08-12" },
+    ],
+  },
+];
+
+/** M0 固定高亮一条，用于呈现选中态；M1 改由当前文档路径推导 */
+const M0_SELECTED_ID = "t-guide";
+
+/** 搜索框：聚焦只把描边换成墨色，不加 ring、不加发光（铁律 6） */
+function SidebarSearch() {
+  return (
+    <div className="flex h-input shrink-0 items-center gap-1.5 rounded-row border bg-card px-2.5 focus-within:border-brand">
+      <IconSearch size={14} className="shrink-0 text-tertiary" />
+      <input
+        type="text"
+        placeholder={t.sidebar.searchPlaceholder}
+        className="min-w-0 flex-1 border-none bg-transparent text-ui text-primary outline-none placeholder:text-caption"
+      />
     </div>
   );
 }
 
-function SidebarGroup({ label, rows }: { label: string; rows: number }) {
+interface RecentRowProps {
+  readonly entry: RecentEntry;
+  readonly selected: boolean;
+}
+
+/**
+ * 文件条目 32px：选中态与 hover 共用同一枚半透明底 + 8px 圆角整块高亮，
+ * 没有左侧竖条、没有边框、字重不变（铁律 3）。
+ */
+function RecentRow({ entry, selected }: RecentRowProps) {
   return (
-    <div className="flex flex-col gap-1 px-2 pb-2">
-      <div className="px-2 pb-1 pt-2 text-xs text-secondary">{label}</div>
-      {Array.from({ length: rows }, (_, index) => (
-        <SidebarPlaceholderRow key={index} active={index === 0 && label === t.sidebar.groupToday} />
-      ))}
-    </div>
+    <button
+      type="button"
+      title={entry.name}
+      aria-current={selected ? "true" : undefined}
+      className={`flex h-row w-full items-center gap-1.5 rounded-row px-2 text-left hover:bg-hover ${
+        selected ? "bg-hover" : ""
+      }`}
+    >
+      <IconFile size={14} className="shrink-0 text-tertiary" />
+      <span className="min-w-0 flex-1 truncate text-ui text-primary">
+        {entry.name}
+      </span>
+      <span className="shrink-0 text-ui-xs text-tertiary">{entry.time}</span>
+    </button>
+  );
+}
+
+function RecentGroupBlock({ group }: { readonly group: RecentGroup }) {
+  const [expanded, setExpanded] = useState(true);
+
+  return (
+    <section className="mt-1 first:mt-0">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        title={expanded ? t.sidebar.collapseGroup : t.sidebar.expandGroup}
+        onClick={() => setExpanded((value) => !value)}
+        className="flex h-row-group w-full items-center gap-1 rounded-row px-2 text-left hover:bg-hover"
+      >
+        <IconChevron
+          size={12}
+          className={`shrink-0 text-tertiary transition-transform duration-150 ease-standard ${
+            expanded ? "rotate-90" : ""
+          }`}
+        />
+        <span className="truncate text-ui text-tertiary">{group.label}</span>
+      </button>
+
+      {expanded ? (
+        <div className="space-y-0.5">
+          {group.entries.map((entry) => (
+            <RecentRow
+              key={entry.id}
+              entry={entry}
+              selected={entry.id === M0_SELECTED_ID}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function Sidebar({ groups }: { readonly groups: readonly RecentGroup[] }) {
+  return (
+    <aside className="flex w-sidebar shrink-0 flex-col border-r border-l1 bg-panel px-3 py-1.5">
+      <SidebarSearch />
+
+      <div className="relative mt-1.5 flex min-h-0 flex-1 flex-col">
+        <div className="quiet-bars min-h-0 flex-1 overflow-y-auto pb-4 [scrollbar-gutter:stable]">
+          {groups.length === 0 ? (
+            <p className="px-3 py-4 text-ui-sm text-tertiary">
+              {t.sidebar.empty}
+            </p>
+          ) : (
+            groups.map((group) => (
+              <RecentGroupBlock key={group.id} group={group} />
+            ))
+          )}
+        </div>
+
+        {/* 列表底部渐隐：让滚动内容淡出而不是被硬切 */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-b from-transparent to-panel"
+        />
+      </div>
+    </aside>
+  );
+}
+
+/* ── 阅读区 ─────────────────────────────────────────────────── */
+
+/** M0 无文档：Hero 式空状态（不是灰块、不是骨架屏） */
+function ReadingArea() {
+  return (
+    <main
+      data-reading-root
+      className="quiet-bars min-w-0 flex-1 overflow-y-auto bg-canvas"
+    >
+      <div className="mx-auto flex min-h-full max-w-reading flex-col items-center justify-center px-8 pb-[12vh] pt-4 text-center animate-fade-in">
+        <div
+          aria-hidden
+          className="flex h-12 w-12 items-center justify-center rounded-card bg-brand text-inverted"
+        >
+          <span className="text-ui font-semibold">{t.app.mark}</span>
+        </div>
+
+        <h1 className="mt-4 text-h2 font-semibold text-primary">
+          {t.reading.emptyTitle}
+        </h1>
+        <p className="mt-1.5 text-ui text-tertiary">{t.reading.emptyHint}</p>
+
+        <button
+          type="button"
+          className="mt-5 flex h-btn items-center rounded-btn bg-brand px-3.5 text-ui font-medium text-inverted hover:bg-brand-hover"
+        >
+          {t.common.open}
+        </button>
+      </div>
+    </main>
+  );
+}
+
+/* ── 大纲栏 ─────────────────────────────────────────────────── */
+
+/** 与阅读区同底色，故左边界需要比左栏更明显一档：border-l2（铁律 8） */
+function OutlinePanel({ onClose }: { readonly onClose: () => void }) {
+  return (
+    <aside className="flex w-outline shrink-0 flex-col border-l border-l2 bg-canvas">
+      <div className="flex shrink-0 items-center justify-between border-b border-l2 px-3 pb-3 pt-3.5">
+        <span className="text-ui font-medium text-primary">
+          {t.outline.title}
+        </span>
+        <IconButton label={t.outline.close} onClick={onClose}>
+          <IconClose size={14} />
+        </IconButton>
+      </div>
+
+      <div className="quiet-bars min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <p className="text-ui-sm text-tertiary">{t.outline.empty}</p>
+      </div>
+    </aside>
+  );
+}
+
+/* ── 状态栏 ─────────────────────────────────────────────────── */
+
+/** M0 无文档，统计恒为 0；M1 由当前 DocumentPayload 推导 */
+const M0_STATS = { words: 0, lines: 0 } as const;
+const M0_ZOOM = "100%";
+
+function StatusBar() {
+  return (
+    <footer className="flex h-statusbar shrink-0 items-center justify-between border-t border-l2 bg-panel px-3">
+      <div className="truncate whitespace-nowrap text-ui-xs text-tertiary">
+        <span>{`${M0_STATS.words} ${t.status.words}`}</span>
+        <span aria-hidden className="mx-2.5">
+          ·
+        </span>
+        <span>{`${M0_STATS.lines} ${t.status.lines}`}</span>
+        <span aria-hidden className="mx-2.5">
+          ·
+        </span>
+        <span>{t.status.encoding}</span>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          aria-label={t.status.zoom}
+          title={t.status.zoom}
+          className="flex h-5 items-center rounded-chip px-1.5 text-ui-xs text-tertiary hover:bg-hover hover:text-secondary"
+        >
+          {M0_ZOOM}
+        </button>
+        <button
+          type="button"
+          aria-label={t.status.toggleTheme}
+          title={t.status.toggleTheme}
+          className="flex h-5 w-5 items-center justify-center rounded-full text-tertiary hover:bg-hover hover:text-secondary"
+        >
+          <IconMoon size={12} />
+        </button>
+      </div>
+    </footer>
   );
 }
 
 /* ── 应用外壳 ───────────────────────────────────────────────── */
 
 export default function App() {
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [outlineOpen, setOutlineOpen] = useState(true);
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-canvas font-ui text-primary">
-      {/* 顶栏 44px：整条空白区为窗口拖动区；data-tauri-drag-region 不作用于子元素，
-          按钮自然排除（已核验事实 #16） */}
-      <header
-        data-tauri-drag-region
-        className="flex h-topbar shrink-0 items-center gap-2 border-b bg-panel pl-2"
-      >
-        <button
-          type="button"
-          aria-label={t.topbar.toggleSidebar}
-          title={t.topbar.toggleSidebar}
-          className="flex h-7 w-7 items-center justify-center rounded-sm text-secondary transition-colors duration-hover ease-standard hover:bg-brand-soft hover:text-primary"
-        >
-          <IconMenu />
-        </button>
+      <TopBar
+        onToggleSidebar={() => setSidebarOpen((value) => !value)}
+        onToggleOutline={() => setOutlineOpen((value) => !value)}
+        outlineOpen={outlineOpen}
+      />
 
-        <span data-tauri-drag-region className="text-sm font-medium">
-          {t.app.name}
-        </span>
-        <span data-tauri-drag-region className="truncate-line text-xs text-secondary">
-          {t.topbar.untitled}
-        </span>
-
-        <div data-tauri-drag-region className="flex-1" />
-
-        <nav className="flex items-center gap-1 pr-2">
-          <ToolButton label={t.topbar.find}>
-            <IconSearch />
-          </ToolButton>
-          <ToolButton label={t.topbar.outline}>
-            <IconOutline />
-          </ToolButton>
-          <ToolButton label={t.topbar.export}>
-            <IconExport />
-          </ToolButton>
-          <ToolButton label={t.topbar.share}>
-            <IconShare />
-          </ToolButton>
-          <ToolButton label={t.topbar.more}>
-            <IconMore />
-          </ToolButton>
-        </nav>
-
-        <WindowControls />
-      </header>
-
-      {/* 中部三栏 */}
       <div className="flex min-h-0 flex-1">
-        {/* 左栏 260px（可拖拽 200–360，Ctrl+B 折叠 —— M1 实现） */}
-        <aside className="flex w-sidebar shrink-0 flex-col border-r bg-panel">
-          <div className="p-2">
-            <input
-              type="text"
-              placeholder={t.sidebar.filterPlaceholder}
-              className="h-8 w-full rounded-md border bg-canvas px-2.5 text-xs text-primary placeholder:text-secondary"
-            />
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <SidebarGroup label={t.sidebar.groupPinned} rows={1} />
-            <SidebarGroup label={t.sidebar.groupToday} rows={3} />
-            <SidebarGroup label={t.sidebar.groupEarlier} rows={2} />
-          </div>
-
-          <div className="border-t p-2">
-            <button
-              type="button"
-              className="h-7 w-full rounded-sm px-2 text-left text-xs text-secondary transition-colors duration-hover ease-standard hover:bg-brand-soft hover:text-primary"
-            >
-              {t.sidebar.settings}
-            </button>
-          </div>
-        </aside>
-
-        {/* 阅读区：内容列宽 760px 居中，两侧留白自适应 */}
-        <main
-          data-reading-root
-          className="min-w-0 flex-1 overflow-y-auto bg-canvas font-body"
-        >
-          <div className="mx-auto flex min-h-full max-w-reading flex-col items-center justify-center px-6 py-10 text-center">
-            {/* 空状态（DG 5.3 / 6.6：插画位 + 提示 + 设为默认查看器） */}
-            <div
-              aria-hidden
-              className="mb-6 flex h-24 w-24 items-center justify-center rounded-lg border bg-card"
-            >
-              <svg
-                width="40"
-                height="40"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={1.5}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="text-brand"
-              >
-                <path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" />
-                <path d="M14 3v4h4" />
-                <path d="M9 13v-2l2 2 2-2v2M16.5 11v3m0 0-1.2-1.2M16.5 14l1.2-1.2" />
-              </svg>
-            </div>
-
-            <p className="text-base text-primary">{t.reading.emptyTitle}</p>
-            <p className="mt-2 text-xs text-secondary">{t.reading.emptyHint}</p>
-
-            <div className="mt-6 flex items-center gap-2">
-              <button
-                type="button"
-                className="h-8 rounded-md bg-brand px-3 text-xs text-canvas transition-opacity duration-press hover:opacity-90"
-              >
-                {t.common.open}
-              </button>
-              <button
-                type="button"
-                className="h-8 rounded-md border px-3 text-xs text-secondary transition-colors duration-hover ease-standard hover:bg-brand-soft hover:text-primary"
-              >
-                {t.reading.setDefaultViewer}
-              </button>
-            </div>
-          </div>
-        </main>
-
-        {/* 大纲面板 240px：此处呈现「钉住态」；浮层态在 M1 实现（FR-04） */}
-        <aside className="flex w-outline shrink-0 flex-col border-l bg-panel">
-          <div className="flex h-9 items-center justify-between border-b px-3">
-            <span className="text-xs text-primary">{t.outline.title}</span>
-            <button
-              type="button"
-              aria-label={t.outline.unpin}
-              title={t.outline.unpin}
-              className="flex h-6 w-6 items-center justify-center rounded-sm text-secondary transition-colors duration-hover ease-standard hover:bg-brand-soft hover:text-primary"
-            >
-              <svg {...iconProps} width={14} height={14}>
-                <path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5Z" />
-                <path d="M12 14v6" />
-              </svg>
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto px-3 py-2 text-xs text-secondary">
-            {t.outline.empty}
-          </div>
-        </aside>
+        {sidebarOpen ? <Sidebar groups={M0_SAMPLE_GROUPS} /> : null}
+        <ReadingArea />
+        {outlineOpen ? (
+          <OutlinePanel onClose={() => setOutlineOpen(false)} />
+        ) : null}
       </div>
 
-      {/* 状态栏 26px */}
-      <footer className="flex h-statusbar shrink-0 items-center justify-between border-t bg-panel px-3 text-xs text-secondary">
-        <div className="flex items-center gap-1">
-          <span>0 {t.status.words}</span>
-          <span aria-hidden>·</span>
-          <span>0 {t.status.lines}</span>
-          <span aria-hidden>·</span>
-          <span>UTF-8</span>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            aria-label={t.status.zoom}
-            title={t.status.zoom}
-            className="rounded-sm px-1 transition-colors duration-hover ease-standard hover:text-primary"
-          >
-            100%
-          </button>
-          <button
-            type="button"
-            aria-label={t.status.fontSize}
-            title={t.status.fontSize}
-            className="rounded-sm px-1 transition-colors duration-hover ease-standard hover:text-primary"
-          >
-            Aa
-          </button>
-          <button
-            type="button"
-            aria-label={t.status.theme}
-            title={t.status.theme}
-            className="flex items-center rounded-sm px-1 transition-colors duration-hover ease-standard hover:text-primary"
-          >
-            <svg {...iconProps} width={14} height={14}>
-              <circle cx="12" cy="12" r="4.5" />
-              <path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6l1.4 1.4m10 10 1.4 1.4m0-12.8-1.4 1.4m-10 10-1.4 1.4" />
-            </svg>
-          </button>
-        </div>
-      </footer>
+      <StatusBar />
     </div>
   );
 }

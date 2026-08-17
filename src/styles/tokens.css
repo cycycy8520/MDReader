@@ -1,127 +1,222 @@
 /**
- * Design Tokens —— DG 5.5（色板）/ 5.6（字体栈）/ 5.7（圆角阴影间距）/ 5.2（区域尺寸）/ 6.3（动效）
+ * 设计 Token —— 唯一定义处（DG 5.5）。组件层只引用语义变量，禁止裸色值。
  *
- * 本文件是全部 Token 的唯一定义处（AI_DEV_GUIDE 第 4 节仓库结构）。
- * 规则：
- *   1. 组件只引用 Token，禁止裸色值（红线 14）；新增色 Token 必须先写进 DG 5.5。
- *   2. 深色为设计基准 → 定义在 :root；浅色通过 [data-theme="light"] 覆盖。
- *   3. 用户未显式选择主题时（<html> 上无 data-theme），由 prefers-color-scheme 兜底跟随系统。
+ * 本文件的数值来自对参考项目 DeepSeek Harness 客户端设计系统的实测提取
+ * （packages/client/ui-theme/src/styles/design-platform.css 等），采用与其相同的
+ * **两层 Token 结构**：
+ *   第 1 层 --md-static-*  原始色阶，明暗共用，只定义一次
+ *   第 2 层 --md-*         语义别名，主题切换 100% 发生在这一层
+ * 新增颜色必须先进静态层，再在两个主题块里各绑一次语义名。
+ *
+ * 主题落地：默认跟随系统；显式切换写 <html data-theme="light|dark">。
+ * 变量声明在 :root，Tailwind 通过 theme.extend 映射为语义类名。
  */
 
 :root {
-  /* ── 色板：深色（DG 5.5 设计基准稿） ───────────────────────────── */
-  --color-bg-canvas: #0e1116; /* 主背景 */
-  --color-bg-panel: #151a22; /* 左侧栏 / 顶栏 / 状态栏 */
-  --color-bg-card: #1c232e; /* 卡片、悬浮层 */
-  --color-bg-code: #0a0d12; /* 代码块 */
-  --color-border: #2a3341; /* 分割线 / 描边 */
-  --color-text-primary: #e6edf3; /* 正文 */
-  --color-text-secondary: #8b98a5; /* 次要文字 */
-  --color-brand: #4c8df6; /* 品牌色 */
-  --color-brand-soft: #4c8df61a; /* 选中背景 */
-  --color-success: #3fb950;
-  --color-warn: #d29922;
-  --color-danger: #f85149;
+  /* ── 第 1 层：静态色阶（明暗共用） ─────────────────────────── */
 
-  /* 阴影（DG 5.7）：卡片 / 弹窗浮层 */
-  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.25);
-  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.35);
+  /* 中性偏冷的蓝灰阶：主文字不是纯黑、主白不是纯白，这是整套气质的来源 */
+  --md-static-neutral-50: #f9fafb;
+  --md-static-neutral-60: #f5f6f7;
+  --md-static-neutral-100: #ebeef2;
+  --md-static-neutral-200: #e1e5ee;
+  --md-static-neutral-400: #adb2b8;
+  --md-static-neutral-500: #81858c;
+  --md-static-neutral-600: #61666b;
+  --md-static-neutral-750: #43454a;
+  --md-static-neutral-1000: #0f1115;
 
-  /* ── 字体栈（DG 5.6） ─────────────────────────────────────────── */
-  --font-ui: -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif;
-  --font-body: system-ui, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  /* 深色主题的实色台阶：越浮起越浅（标准 elevation） */
+  --md-static-dark-base: #151517;
+  --md-static-dark-panel: #1b1b1c;
+  --md-static-dark-layer-1: #232324;
+  --md-static-dark-layer-2: #2c2c2e;
+  --md-static-dark-layer-3: #353638;
+  --md-static-dark-line: #3c3c3d;
+  --md-static-dark-line-hover: #545557;
 
-  /* ── 圆角三档（DG 5.7） ───────────────────────────────────────── */
-  --radius-sm: 4px; /* 小控件 */
-  --radius-md: 8px; /* 卡片、输入框、代码块 */
-  --radius-lg: 12px; /* 弹窗、菜单面板 */
+  /* 强调蓝（链接、焦点环、进度）——注意它不是"品牌主色" */
+  --md-static-accent-400: #679efe;
+  --md-static-accent-500: #4176e6;
+  --md-static-accent-100: #e4edfd;
+  --md-static-accent-800: #34415b;
 
-  /* ── 间距：4px 栅格（DG 5.7），常用 8/12/16/24 ────────────────── */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-6: 24px;
+  /* 状态色 */
+  --md-static-red-400: #f25a5a;
+  --md-static-red-600: #ec1313;
+  --md-static-green-500: #22c55e;
+  --md-static-amber-500: #f59e0b;
+  --md-static-amber-600: #dd8629;
 
-  /* ── 区域尺寸（DG 5.2 区域规格） ──────────────────────────────── */
-  --size-topbar: 44px; /* 顶栏 */
-  --size-statusbar: 26px; /* 状态栏 */
-  --size-sidebar: 260px; /* 左侧栏默认宽 */
-  --size-sidebar-min: 200px; /* 左侧栏可拖拽下限 */
-  --size-sidebar-max: 360px; /* 左侧栏可拖拽上限 */
-  --size-outline: 240px; /* 大纲面板 */
-  --size-reading: 760px; /* 阅读区内容列宽 */
-  --size-find: 360px; /* 查找浮条 */
+  /* ── 第 2 层：语义别名（浅色主题为默认） ───────────────────── */
 
-  /* ── 阅读排版（DG 5.4） ───────────────────────────────────────── */
-  --reading-font-size: 16px;
-  --reading-line-height: 1.75;
-  --reading-paragraph-gap: 1.2em;
+  /* 背景：浅色四层全是纯白，层次靠描边与阴影拉开，只有侧栏降一档 */
+  --md-bg-canvas: #ffffff;
+  --md-bg-panel: var(--md-static-neutral-50);
+  --md-bg-card: #ffffff;
+  --md-bg-layer: #ffffff;
+  --md-bg-code: var(--md-static-neutral-60);
+  --md-bg-inline-code: rgba(0, 0, 0, 0.05);
 
-  /* ── 动效（DG 6.3 动效规格表；军规见 DG 6.1） ─────────────────── */
-  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --duration-hover: 100ms; /* 按钮/条目 hover */
-  --duration-press: 80ms; /* 按下 */
-  --duration-panel: 200ms; /* 左栏折叠、大纲钉住列宽 */
-  --duration-overlay-in: 180ms; /* 浮层出 */
-  --duration-overlay-out: 140ms; /* 浮层入（出慢入快） */
-  --duration-theme: 150ms; /* 手动切主题时的全局色过渡 */
+  /* 交互叠加：hover 与"选中"共用同一枚半透明色，叠在什么底上就适配什么层级 */
+  --md-bg-hover: rgba(38, 49, 72, 0.06);
+  --md-bg-active: rgba(38, 49, 72, 0.1);
+  --md-bg-hover-danger: rgba(236, 19, 19, 0.05);
 
-  /* 滚动条（DG 6.4-10） */
-  --scrollbar-size: 8px;
-  --scrollbar-size-hover: 10px;
+  /* 边框：四档纯透明度叠加，绝不用实色 */
+  --md-border-l1: rgba(0, 0, 0, 0.04);
+  --md-border-l2: rgba(0, 0, 0, 0.1);
+  --md-border-l3: rgba(0, 0, 0, 0.12);
+  --md-border-l4: rgba(0, 0, 0, 0.16);
+  /* 浮层描边：浅色完全透明（只靠阴影），深色补一道发丝高光 */
+  --md-border-float: rgba(0, 0, 0, 0);
+
+  /* 文字四档 */
+  --md-text-primary: var(--md-static-neutral-1000);
+  --md-text-secondary: var(--md-static-neutral-600);
+  --md-text-tertiary: var(--md-static-neutral-500);
+  --md-text-caption: var(--md-static-neutral-400);
+  --md-text-disabled: var(--md-static-neutral-200);
+  /* 主按钮上的字（反色） */
+  --md-text-inverted: #ffffff;
+
+  /* 品牌主色 = 近黑/近白（主按钮用它），强调蓝另算 */
+  --md-brand: var(--md-static-neutral-1000);
+  --md-brand-hover: var(--md-static-neutral-750);
+  --md-accent: var(--md-static-accent-500);
+  --md-accent-soft: var(--md-static-accent-100);
+
+  /* 状态色 */
+  --md-success: var(--md-static-green-500);
+  --md-warn: var(--md-static-amber-600);
+  --md-danger: var(--md-static-red-600);
+
+  /* 滚动条：两级表面高度 */
+  --md-scrollbar-thumb: #e5e5e5;
+  --md-scrollbar-thumb-hover: #d4d4d4;
+
+  /* 提示气泡：两个主题都用深色板 */
+  --md-tooltip-bg: var(--md-static-dark-layer-2);
+  --md-mask: rgba(0, 0, 0, 0.24);
+
+  /* ── 阴影：只有三档，且明暗共用同一配方（深色靠底色台阶分层） ── */
+  --md-shadow-lv1: 0 2px 4px 0 rgba(0, 0, 0, 0.05);
+  --md-shadow-lv2:
+    0 4px 12px 0 rgba(0, 0, 0, 0.02), 0 2px 8px 0 rgba(0, 0, 0, 0.04);
+  /* lv3 第一层是用阴影伪造 1px 描边（比真边框更柔），末层大扩散仅 8% 不透明 */
+  --md-shadow-lv3:
+    0 0 1px 0 rgba(0, 0, 0, 0.2), 0 0 4px 0 rgba(0, 0, 0, 0.02),
+    0 12px 32px 0 rgba(0, 0, 0, 0.08);
+
+  /* ── 动效：ease 全站统一，时长三档 ───────────────────────── */
+  --md-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --md-duration-fast: 100ms;
+  --md-duration: 200ms;
+  --md-duration-slow: 300ms;
+
+  /* ── 尺寸契约（DG 5.2） ──────────────────────────────────── */
+  --md-topbar-h: 40px;
+  --md-statusbar-h: 26px;
+  --md-sidebar-w: 280px;
+  --md-sidebar-min: 264px;
+  --md-sidebar-max: 420px;
+  --md-sidebar-collapsed: 56px;
+  --md-outline-w: 300px;
+  --md-reading-w: 748px;
+  --md-reading-min: 640px;
+
+  /* ── 字体栈：Windows 上关键是 Microsoft YaHei 在栈内；
+        等宽栈刻意不带裸 monospace 尾巴，否则中文会掉到 SimSun ── */
+  --md-font-ui:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial,
+    sans-serif;
+  --md-font-mono:
+    "SF Mono", "JetBrains Mono", "Fira Code", Consolas, "Liberation Mono", Menlo,
+    Courier, "PingFang SC", "Microsoft YaHei";
 }
 
-/* ── 浅色主题（DG 5.5 浅色段） ──────────────────────────────────── */
-[data-theme="light"] {
-  --color-bg-canvas: #ffffff;
-  --color-bg-panel: #f6f8fa;
-  --color-bg-card: #ffffff; /* DG 未单列：浅色下卡片用白底 + 描边区分层次 */
-  --color-bg-code: #f6f8fa;
-  --color-border: #d0d7de;
-  --color-text-primary: #1f2328;
-  --color-text-secondary: #59636e;
-  --color-brand: #1f6feb;
-  --color-brand-soft: #1f6feb1a;
-  --color-success: #1a7f37; /* GitHub Light 同款，保证 AA 对比度（DG 6.7） */
-  --color-warn: #9a6700;
-  --color-danger: #cf222e;
+/* ── 深色主题：只重绑语义层，静态色阶不动 ─────────────────── */
 
-  /* 浅色主题阴影透明度减半（DG 5.7） */
-  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.12);
-  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.18);
-}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --md-bg-canvas: var(--md-static-dark-base);
+    --md-bg-panel: var(--md-static-dark-panel);
+    --md-bg-card: var(--md-static-dark-layer-1);
+    --md-bg-layer: var(--md-static-dark-layer-3);
+    --md-bg-code: var(--md-static-dark-layer-1);
+    --md-bg-inline-code: rgba(255, 255, 255, 0.08);
 
-/* ── 兜底：未显式指定 data-theme 时跟随系统（首启行为，DG 5.5/F9） ── */
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --color-bg-canvas: #ffffff;
-    --color-bg-panel: #f6f8fa;
-    --color-bg-card: #ffffff;
-    --color-bg-code: #f6f8fa;
-    --color-border: #d0d7de;
-    --color-text-primary: #1f2328;
-    --color-text-secondary: #59636e;
-    --color-brand: #1f6feb;
-    --color-brand-soft: #1f6feb1a;
-    --color-success: #1a7f37;
-    --color-warn: #9a6700;
-    --color-danger: #cf222e;
+    --md-bg-hover: rgba(255, 255, 255, 0.08);
+    --md-bg-active: rgba(255, 255, 255, 0.14);
+    --md-bg-hover-danger: rgba(242, 90, 90, 0.15);
 
-    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.12);
-    --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.18);
+    --md-border-l1: rgba(255, 255, 255, 0.06);
+    --md-border-l2: rgba(255, 255, 255, 0.12);
+    --md-border-l3: rgba(255, 255, 255, 0.16);
+    --md-border-l4: rgba(255, 255, 255, 0.2);
+    --md-border-float: rgba(255, 255, 255, 0.06);
+
+    --md-text-primary: var(--md-static-neutral-50);
+    --md-text-secondary: #cfd3d6;
+    --md-text-tertiary: var(--md-static-neutral-400);
+    --md-text-caption: var(--md-static-neutral-500);
+    --md-text-disabled: var(--md-static-neutral-750);
+    --md-text-inverted: var(--md-static-neutral-1000);
+
+    --md-brand: var(--md-static-neutral-50);
+    --md-brand-hover: var(--md-static-neutral-100);
+    --md-accent: var(--md-static-accent-400);
+    --md-accent-soft: var(--md-static-accent-800);
+
+    --md-danger: var(--md-static-red-400);
+    --md-warn: var(--md-static-amber-500);
+
+    --md-scrollbar-thumb: var(--md-static-dark-line);
+    --md-scrollbar-thumb-hover: var(--md-static-dark-line-hover);
+
+    --md-tooltip-bg: var(--md-static-dark-line-hover);
+    --md-mask: rgba(0, 0, 0, 0.5);
   }
 }
 
-/* ── 无障碍：系统开启「减少动态效果」时所有动效时长归零（DG 6.1 军规 3 / 6.7） ── */
-@media (prefers-reduced-motion: reduce) {
-  :root {
-    --duration-hover: 0ms;
-    --duration-press: 0ms;
-    --duration-panel: 0ms;
-    --duration-overlay-in: 0ms;
-    --duration-overlay-out: 0ms;
-    --duration-theme: 0ms;
-  }
+/* 显式选择深色时，无条件覆盖（优先级高于 media 查询） */
+:root[data-theme="dark"] {
+  --md-bg-canvas: var(--md-static-dark-base);
+  --md-bg-panel: var(--md-static-dark-panel);
+  --md-bg-card: var(--md-static-dark-layer-1);
+  --md-bg-layer: var(--md-static-dark-layer-3);
+  --md-bg-code: var(--md-static-dark-layer-1);
+  --md-bg-inline-code: rgba(255, 255, 255, 0.08);
+
+  --md-bg-hover: rgba(255, 255, 255, 0.08);
+  --md-bg-active: rgba(255, 255, 255, 0.14);
+  --md-bg-hover-danger: rgba(242, 90, 90, 0.15);
+
+  --md-border-l1: rgba(255, 255, 255, 0.06);
+  --md-border-l2: rgba(255, 255, 255, 0.12);
+  --md-border-l3: rgba(255, 255, 255, 0.16);
+  --md-border-l4: rgba(255, 255, 255, 0.2);
+  --md-border-float: rgba(255, 255, 255, 0.06);
+
+  --md-text-primary: var(--md-static-neutral-50);
+  --md-text-secondary: #cfd3d6;
+  --md-text-tertiary: var(--md-static-neutral-400);
+  --md-text-caption: var(--md-static-neutral-500);
+  --md-text-disabled: var(--md-static-neutral-750);
+  --md-text-inverted: var(--md-static-neutral-1000);
+
+  --md-brand: var(--md-static-neutral-50);
+  --md-brand-hover: var(--md-static-neutral-100);
+  --md-accent: var(--md-static-accent-400);
+  --md-accent-soft: var(--md-static-accent-800);
+
+  --md-danger: var(--md-static-red-400);
+  --md-warn: var(--md-static-amber-500);
+
+  --md-scrollbar-thumb: var(--md-static-dark-line);
+  --md-scrollbar-thumb-hover: var(--md-static-dark-line-hover);
+
+  --md-tooltip-bg: var(--md-static-dark-line-hover);
+  --md-mask: rgba(0, 0, 0, 0.5);
 }
