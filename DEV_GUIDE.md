@@ -159,6 +159,7 @@ Windows 上缺少一个"又轻又快、开箱即用、与国内办公生态（�
 
 ### 4.2 版本基线
 - Rust stable（edition 2021+）；Tauri 2.x；React 18+；**Vditor ≥3.11.3**（其内置 Mermaid 11.x、KaTeX）；Node 20+；pnpm。
+- **M0-0 实测环境（2026-08-17 建仓时）**：rustc/cargo 1.97.1、Node 22.19.0、pnpm 11.22.0、tauri 2.11.5、wry 0.55.1 → **webview2-com 0.38.2 / windows 0.61.3**（红线 10 的锁定值，已写入 src-tauri/Cargo.toml 注释）。
 - M0 结束时把全部依赖冻结为**精确版本号**写入 `rust-toolchain.toml` / `Cargo.lock` / `package.json` 并回填本节；升级需在更新日志备案。
 - `webview2-com` / `windows` crate 版本跟随 Tauri 锁定（`cargo tree` 核对），否则 COM 接口类型不兼容。
 
@@ -444,7 +445,7 @@ Windows 上缺少一个"又轻又快、开箱即用、与国内办公生态（�
 | 模块 | 状态 | 备注 |
 |---|---|---|
 | 需求与方案文档 | ✅ v0.2（2026-08-17） | 即本文档，v0.1 全量核验后修订 |
-| M0-0 建仓与脚手架（含 CI 骨架） | 🔄 进行中 | 仓库 github.com/cycycy8520/MDReader 已建、脚手架已提交（396fb64）；**待补**：本机装 Rust/pnpm 后跑通 `pnpm tauri dev` 与 `tauri build`、补应用图标 |
+| M0-0 建仓与脚手架（含 CI 骨架） | ✅ 已完成 2026-08-17 | 仓库 github.com/cycycy8520/MDReader；工具链 Rust 1.97.1 + pnpm 11.22.0；自测全绿（tsc / eslint / vite build / cargo check / clippy -D warnings / cargo test 14 passed / check-no-cdn）；`tauri build` 出 NSIS 安装包 **2.03MB**（预算 25MB）。**遗留**：正式 Logo 待品牌任务（当前为占位图标）；CI 尚未在 GitHub Actions 上实跑 |
 | M0-① PDF 主路线+兜底 | ⬜ 未开始 | 最高风险，M0-0 后最先做 |
 | M0-② Vditor 实测包 | ⬜ 未开始 | 含本地图片方案定案 |
 | M0-③ 剪贴板保真实测 | ⬜ 未开始 | 公众号编辑器 + 飞书文档 |
