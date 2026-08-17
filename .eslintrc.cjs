@@ -63,6 +63,9 @@ module.exports = {
     {
       files: ["scripts/**/*.mjs", "*.config.js", "*.config.ts"],
       env: { node: true, browser: false },
+      // 命令行脚本的输出就是它的用户界面（进度、体积汇总、校验结论），
+      // console 在这里是功能而非调试残留，故关闭该规则。
+      rules: { "no-console": "off" },
     },
   ],
 };

@@ -1,0 +1,7 @@
+# pnpm 设置（pnpm 10+ 起，原 package.json 的 "pnpm" 字段迁移到此处）
+#
+# allowBuilds：pnpm 默认拦截依赖的 postinstall 脚本以防供应链攻击，此处显式放行。
+# esbuild 需要 postinstall 下载平台二进制，否则 Vite 无法运行。
+# 新增条目前请确认该依赖确实需要执行构建脚本（AI_DEV_GUIDE 红线 12）。
+allowBuilds:
+  esbuild: true

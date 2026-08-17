@@ -79,7 +79,9 @@ export interface StrippedSource {
   body: string;
 }
 
-const FRONTMATTER_RE = /^﻿?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+// 开头的 BOM 用转义而非字面 BOM 字符：字面 BOM 在编辑器里不可见，
+// 容易被格式化工具或批量替换误删，删掉后正则会变成非法的 `^?`。
+const FRONTMATTER_RE = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
 /**
  * 剥离文档头部的 YAML frontmatter。

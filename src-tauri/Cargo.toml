@@ -18,7 +18,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # —— 桌面壳与官方插件（DG 4.1「官方现成能力优先」）——
-tauri = { version = "2", features = [] }
+# protocol-asset：查看态本地图片加载的候选方案之一（asset 协议 vs Rust 读文件转 data URL，
+# 二选一在 M0-② 定案，见 DG 8「查看态本地图片」）。必须与 tauri.conf.json 的
+# app.security.assetProtocol.enable 保持一致，否则 tauri-build 会在编译期报 allowlist 不匹配。
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-cli = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -45,13 +48,17 @@ winreg = "0.52"
 # reqwest：飞书 medias/upload_all + import_tasks 两个接口（DG 4.1 飞书 SDK 行）
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 
-# —— 待 M0-① 锁定的 COM 依赖（红线 10）——
-# PrintToPdf / CDP 需要 `webview2-com` 与 `windows`，其版本必须与 Tauri 内部 wry
-# 锁定的版本**精确一致**（`cargo tree -i webview2-com` / `cargo tree -i windows` 核对后写死），
-# 永不单独升级。M0-① 核对完成后取消下面两行注释并填入精确版本：
+# —— M0-① 的 COM 依赖（红线 10）——
+# PrintToPdf / CDP 需要 `webview2-com` 与 `windows`，版本必须与 Tauri 内部 wry
+# 锁定的版本**精确一致**，永不单独升级。
+#
+# 已于 2026-08-17 用 `cargo tree -i` 核对（tauri 2.11.5 环境）：
+#   wry v0.55.1 → webview2-com v0.38.2、windows v0.61.3
+# 升级 tauri 后必须重新核对这三个版本并同步此处。
+# M0-① 开工时取消下面三行注释即可（features 按实际调用的 COM 接口增补）：
 # [target.'cfg(windows)'.dependencies]
-# webview2-com = "=<跟随 wry>"
-# windows = { version = "=<跟随 wry>", features = ["Win32_Foundation", "Win32_System_Com"] }
+# webview2-com = "=0.38.2"
+# windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_System_Com"] }
 
 [profile.release]
 # 25MB 安装包预算（DG 3.2）：体积优先

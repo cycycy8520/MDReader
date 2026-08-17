@@ -89,7 +89,7 @@ fn prune(dir: &Path) -> AppResult<()> {
     }
 
     // 按修改时间倒序：新的在前
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
     let now = SystemTime::now();
     let mut total: u64 = 0;

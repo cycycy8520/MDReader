@@ -208,7 +208,7 @@ function main() {
   }
 
   // 去 BOM + 统一换行，保证体积统计与行级识别可预期
-  const raw = fs.readFileSync(srcAbs, 'utf8').replace(/^﻿/, '').replace(/\r\n/g, '\n');
+  const raw = fs.readFileSync(srcAbs, 'utf8').replace(/^/, '').replace(/\r\n/g, '\n');
   const { frontmatter, body } = splitFrontmatter(raw);
   const bodyLines = body.replace(/^\n+/, '').replace(/\s+$/, '').split('\n');
 
