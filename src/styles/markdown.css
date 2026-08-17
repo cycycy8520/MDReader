@@ -371,23 +371,19 @@
 }
 
 /* 外链图片占位（红线 4：默认不发起网络请求）——业务专属 UI，基底不可能有。
-   字号取 em、盒距取 calc(--md-reading-size)，与正文一起缩放；
-   作为 UI 而非正文，同样不可选中（与代码块工具条同理，防止污染复制内容） */
-.md-content .md-remote-image {
-  display: flex;
-  align-items: center;
-  gap: calc(var(--md-reading-size) * 0.5);
-  margin: var(--md-reading-size) 0;
-  padding: calc(var(--md-reading-size) * 0.75) calc(var(--md-reading-size) * 0.875);
-  border: 1px dashed var(--md-border-l3);
-  border-radius: 8px;
-  color: var(--md-text-tertiary);
-  font-size: 0.8125em; /* 13/16 */
-  line-height: 1.54; /* 原 20px ÷ 13px */
-}
 
-.md-content .md-remote-image,
-.md-content .md-remote-image * {
+   【选择器为什么是 [data-external-image] 而不是类名】渲染层（preview.ts 的
+   replaceWithExternalPlaceholder）给占位块的**视觉**全部用 Tailwind 语义类写在元素上，
+   唯一稳定的结构标记是 `data-external-image` 属性。此处曾写成 `.md-remote-image`——
+   一个渲染层从未产出过的类名，整段规则实际上一条都没生效（典型的"样式层与渲染层对错口径"）。
+   现在只保留**Tailwind 覆盖不到**的那一条：不可选中。视觉仍归 Tailwind 一处管，
+   避免同一个盒子被两套规则各画一遍。
+
+   为什么必须不可选中：与代码块工具条同理——拖选正文时把"点击加载"这类 UI 文字
+   一起粘出去，是肉眼可见的脏。连后代一起写死是因为 index.css 的
+   `[data-reading-root] * { user-select: text }` 直接命中后代，父级继承压不住它。 */
+.md-content [data-external-image],
+.md-content [data-external-image] * {
   user-select: none;
 }
 
@@ -555,4 +551,277 @@
   width: 0.875em;
   height: 0.875em;
   vertical-align: middle;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   六、排版长尾（UPGRADE_PLAN 4.1 / 4.2）
+
+   本节的 DOM 全部由渲染层（src/render/preview.ts 的「4.5 排版后处理」）产出，
+   基底不可能认识它们。每块结构与类名的契约都写在渲染层对应函数的注释里，
+   改类名必须两边同步——这是本节唯一的耦合点。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 4.1 GitHub alerts ─────────────────────────────────────────
+   结构：.md-alert[data-alert] > (.md-alert-title(svg + span) + .md-alert-body)
+
+   观感对齐 GitHub / MPE：**只有语义色左边线 + 同色标题行，没有底色**。
+   刻意不铺半透明底：正文里一篇文档常有五六个告警块，块块有底会把版面切得七零八落，
+   而左边线已经足够表达"这一段是被强调的"。（这也正好省掉 color-mix 之类的取色特技。）
+
+   五色映射（本项目 Token 层无紫色，IMPORTANT 的 GitHub 紫并入 accent，
+   与第一节变量桥的 --fgColor-done 同一处置，两处保持一致）：
+     NOTE→accent  TIP→success  IMPORTANT→accent  WARNING→warn  CAUTION→danger
+
+   --md-alert-label 单独存在，只为「作者写了本表之外的类型」那一档：
+   那时边线退成中性的 border-l3，但标题若也用它就成了几乎看不见的浅灰，
+   所以标题另走 text-secondary。其余五档 label 恒等于 tone。 */
+
+.md-content .md-alert {
+  --md-alert-tone: var(--md-border-l3);
+  --md-alert-label: var(--md-alert-tone);
+
+  margin: var(--md-reading-size) 0;
+  padding: 0 0 0 var(--md-reading-size);
+  border-left: 0.25em solid var(--md-alert-tone);
+}
+
+.md-content .md-alert[data-alert="default"] {
+  --md-alert-label: var(--md-text-secondary);
+}
+
+.md-content .md-alert[data-alert="note"] {
+  --md-alert-tone: var(--md-accent);
+}
+
+.md-content .md-alert[data-alert="tip"] {
+  --md-alert-tone: var(--md-success);
+}
+
+/* IMPORTANT：GitHub 是紫色，Token 层无紫 → 并入 accent（见本块开头说明） */
+.md-content .md-alert[data-alert="important"] {
+  --md-alert-tone: var(--md-accent);
+}
+
+.md-content .md-alert[data-alert="warning"] {
+  --md-alert-tone: var(--md-warn);
+}
+
+.md-content .md-alert[data-alert="caution"] {
+  --md-alert-tone: var(--md-danger);
+}
+
+.md-content .md-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  margin-bottom: 0.25em;
+  color: var(--md-alert-label);
+  font-weight: 600;
+  /* 与第四点五节的标题同款收紧：这一行是标题不是正文 */
+  line-height: 1.4;
+}
+
+/* 图标与类型名同色：此处的图标是**语义标记**而不是 UI 装饰，
+   「图标比同行文字淡一档」那条规矩管的是外壳里的功能图标（顶栏/菜单/左栏）。
+   这里淡一档反而会让告警的语义强度低于文字，也与 GitHub / MPE 的观感对不上。
+   尺寸取 1em：跟着告警块所在的字号走，缩放时不脱节。 */
+.md-content .md-alert-title svg {
+  flex: none;
+  width: 1em;
+  height: 1em;
+}
+
+/* 首尾外边距归零：告警块自己已经有上下 margin，内部再叠一层就会显得空心 */
+.md-content .md-alert-body > :first-child {
+  margin-top: 0;
+}
+
+.md-content .md-alert-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* ── 4.2-a details / summary 折叠块 ───────────────────────────
+   实测结论（2026-08-18，直接跑 vendor 的 lute.min.js 验证）：
+   `<details>/<summary>` 原样透传 —— lute 的 sanitize 只清事件属性与 script，
+   DOMPurify 的 html profile 本就放行这两个标签，且块内的 Markdown 会照常解析
+   （表格/列表/嵌套 details 全部成立）。所以这里**只补样式**，渲染层零改动。
+
+   三角自绘：UA 默认 marker 在 Chromium 与 Firefox 上长得不一样，且颜色跟随文字太重。
+   展开态用 rotate 而不是换边框方向——换方向会让三角的布局盒宽高互换，
+   summary 文字随之左右跳一下；transform 不参与布局，纹丝不动。
+   刻意不加 transition：铁律「无位移/缩放」，一次性翻转比补间更干脆。 */
+
+.md-content details {
+  margin: var(--md-reading-size) 0;
+  padding: calc(var(--md-reading-size) * 0.5) var(--md-reading-size);
+  border: 1px solid var(--md-border-l2);
+  /* 与代码块同族的圆角（见第五节 pre 的说明）：都是"正文里的一块外壳" */
+  border-radius: 12px;
+}
+
+.md-content details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  /* 去掉 UA 的默认 marker：Chromium 走 list-style，旧内核走 ::-webkit-details-marker */
+  list-style: none;
+}
+
+.md-content details > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* 三角用 inline-block 而**不是** flex 布局对齐。
+   summary 的内容是作者的行内 Markdown（`<summary>Sum <b>粗</b></summary>`），
+   一旦把 summary 设成 flex，连续文本会被包成匿名 flex item，
+   项与项之间的那个空格会被吃掉——渲染成「Sum粗」。这个坑不显眼但一定会踩到。 */
+.md-content details > summary::before {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 0.5em;
+  vertical-align: middle;
+  /* 三角比同行文字淡一档（此处是纯 UI 装饰，与告警块的语义图标不同档） */
+  color: var(--md-text-tertiary);
+  border-top: 0.32em solid transparent;
+  border-bottom: 0.32em solid transparent;
+  border-left: 0.4em solid currentColor;
+}
+
+.md-content details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+/* 展开内容左缩进：与 summary 的文字起点对齐（三角 0.4em + gap 0.5em ≈ 0.9em，
+   取 1.25em 让层次更明确）。用 `summary ~ *` 而不是包一层 div：
+   details 的内容是作者的原始 HTML，渲染层不去动它的结构。 */
+.md-content details > summary ~ * {
+  margin-left: 1.25em;
+}
+
+.md-content details > summary + * {
+  margin-top: calc(var(--md-reading-size) * 0.5);
+}
+
+.md-content details > :last-child {
+  margin-bottom: 0;
+}
+
+/* ── 4.2-b [TOC] 文内目录 ─────────────────────────────────────
+   结构：nav.md-toc > (.md-toc-title + ul.md-toc-list > li.md-toc-item[data-level])
+   条目是 <a href="#id" data-md-anchor="id">，点击走 App 层既有的锚点委托。
+
+   层级用 data-level 平铺 + padding 递进，而不是嵌套 ul：
+   嵌套会同时带来项目符号与 UA 缩进两套变量，六级下来缩进会失控。 */
+
+.md-content .md-toc {
+  margin: var(--md-reading-size) 0;
+  padding: calc(var(--md-reading-size) * 0.75) var(--md-reading-size);
+  border: 1px solid var(--md-border-l2);
+  border-radius: 12px;
+  background: var(--md-bg-panel);
+  font-size: 0.9375em; /* 15/16：略小于正文，一眼可辨"这是导航不是正文" */
+}
+
+.md-content .md-toc-title {
+  margin-bottom: calc(var(--md-reading-size) * 0.375);
+  color: var(--md-text-tertiary);
+  font-size: 0.8125em; /* 13/16 */
+}
+
+/* (0,2,0) 稳压第五节的 `.md-content ul { list-style: revert }` (0,1,1) */
+.md-content .md-toc-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.md-content .md-toc-item {
+  margin: 0.125em 0;
+}
+
+.md-content .md-toc-item[data-level="2"] {
+  padding-left: 1.25em;
+}
+
+.md-content .md-toc-item[data-level="3"] {
+  padding-left: 2.5em;
+}
+
+.md-content .md-toc-item[data-level="4"] {
+  padding-left: 3.75em;
+}
+
+.md-content .md-toc-item[data-level="5"] {
+  padding-left: 5em;
+}
+
+.md-content .md-toc-item[data-level="6"] {
+  padding-left: 6.25em;
+}
+
+/* 条目 hover 只换字色：不铺底、不加下划线抖动、不加 transition（铁律） */
+.md-content .md-toc a {
+  color: var(--md-text-secondary);
+  text-decoration: none;
+}
+
+.md-content .md-toc a:hover {
+  color: var(--md-accent);
+}
+
+/* ── 4.2-c emoji 短代码 ───────────────────────────────────────
+   实测：lute 默认就把 `:smile:` 这类输出成 Unicode 字形（无需任何资源，也就无需开关）；
+   只有 GitHub 自定义表情会输出 <img class="emoji">，而那批图不在 DG 8 白名单内，
+   渲染层已把它们换成字面短代码 .md-emoji-code。
+   img.emoji 的规则仍然保留：将来若把 images/emoji 纳入白名单，样式层不必再改。 */
+
+.md-content img.emoji {
+  width: 1.25em;
+  height: 1.25em;
+  vertical-align: -0.25em;
+}
+
+.md-content .md-emoji-code {
+  color: var(--md-text-tertiary);
+  font-family: var(--md-font-mono);
+  font-size: 0.9em;
+}
+
+/* ── 4.2-d 渲染失败态（Mermaid 语法错误 / KaTeX 失败） ─────────
+   块级失败复用 .md-alert 的 caution 形态（同一套视觉语言，样式不重复写），
+   这里只补两件它没有的：错误信息行、行内公式的失败 chip。 */
+
+.md-content .md-render-error-message {
+  color: var(--md-text-secondary);
+  font-family: var(--md-font-mono);
+  font-size: 0.8125em; /* 13/16 */
+  /* 报错信息里常有超长的 token 名与位置串，不许把卡片撑破 */
+  overflow-wrap: anywhere;
+}
+
+/* 行内公式失败：保留原始公式文本，染 danger 色 + 极淡底，完整报错挂 title。
+   cursor:help 是明示"这里有话说"，否则用户不会想到去悬停。 */
+.md-content code.md-inline-error {
+  color: var(--md-danger);
+  background: var(--md-bg-hover-danger);
+  cursor: help;
+}
+
+/* ── 4.2-e 嵌套引用的层次区分 ─────────────────────────────────
+   基底给所有层级同一条 --borderColor-default 左线，三层套下来分不清边界在哪。
+   这里让左线**逐层加重**（faint → 中性灰 → 更实的灰）：
+   加重而不是减淡，是因为越深的引用越容易被误读成正文，需要更强的界桩。
+   用 text-* 档而不是 border-* 档：border 三档都是低透明度叠加，
+   在浅色主题下第二、三层与第一层几乎看不出差别，等于没做。 */
+
+.md-content blockquote blockquote {
+  border-left-color: var(--md-text-caption);
+  /* 嵌套层的上下外边距收一半：否则三层套下来会拉出一大片空白 */
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.md-content blockquote blockquote blockquote {
+  border-left-color: var(--md-text-tertiary);
 }

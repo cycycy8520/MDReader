@@ -16,9 +16,13 @@
  *       debug 构建不 minify，写了就会被误报成命中）
  *   3. DOMPurify 后处理（XSS 第二层，DG 8「XSS 三层防御」）——必须在「作者 HTML」阶段完成
  *   4. 本地图片改写（asset 协议）+ 外链图片占位（红线 4）
+ *   4.5 排版后处理（4.1/4.2）：GitHub alerts → .md-alert、emoji 短代码兜底、
+ *      [TOC] → 文内目录（必须排在大纲之后，标题 id 那时才定稿）、链接标注 data-link-*
  *   5. hljs / KaTeX / Mermaid 三个渲染器（产物来自本地可信库，不再过第 2 层的严格配置，
  *      Mermaid 因 securityLevel="loose" 额外单独过一遍图表专用配置）
  *   6. 等待「真正就绪」：三个渲染器全部落地 + document.fonts.ready + 两帧
+ *   6.5 渲染失败态卡片化（4.2）：Mermaid 语法错误、KaTeX/mhchem 失败一律给
+ *      「标题 + 错误信息 + 原始代码」的卡片，不留空白、不留半成品图
  *   7. 代码块增强（语言标签 + 复制按钮）
  *   8. 大纲树 + 滚动高亮（官方不提供，自研；大文件下降级为节流）
  *   9. 打印模板场景：全部就绪后 emit PRINT_READY，通知 Rust 侧执行 PrintToPdf（DG 7.2-4）
@@ -35,7 +39,14 @@
  */
 
 import DOMPurify, { type Config as PurifyConfig } from "dompurify";
-import Vditor from "vditor";
+// 注意：**只导入类型**，不 import 值。
+// `import Vditor from "vditor"` 会把整个 npm 包打进 bundle，其中带着两处外链字符串
+// （内置默认 CDN 常量 https://unpkg.com/vditor@x.y.z 与一张 logo 的 https 地址），
+// 直接违反红线 8（产物中不得出现 unpkg/jsdelivr），CI 的 check:no-cdn 会拦下。
+// 运行时实体改从自托管的 /vditor/dist/method.min.js 取（见 loadVditor），
+// 那份文件已由 scripts/fetch-vditor.mjs 消毒过 CDN 常量。
+// 这也正是 DG 8 的原意：只读渲染加载 52KB 的 method.min.js，不加载完整编辑器。
+import type VditorType from "vditor";
 
 import { t } from "../i18n/zh-CN";
 import { emitPrintReady, toAssetUrl } from "../services/ipc";
@@ -56,6 +67,62 @@ import type {
  * vite.config.ts 的 publicDir:"vendor" 使其在 dev 与产物中都落在 /vditor/dist/... 下。
  */
 export const VDITOR_LOCAL_CDN = "/vditor";
+
+/** 自托管的只读渲染入口（52KB，UMD，挂全局 `Vditor`）。完整编辑器 302KB 不加载。 */
+const VDITOR_METHOD_SRC = `${VDITOR_LOCAL_CDN}/dist/method.min.js`;
+
+/** 运行时用到的静态方法子集——只声明我们真正调用的那几个，避免依赖包的完整类型面 */
+type VditorMethods = Pick<
+  typeof VditorType,
+  | "md2html"
+  | "preview"
+  | "outlineRender"
+  | "highlightRender"
+  | "mathRender"
+  | "mermaidRender"
+>;
+
+declare global {
+  interface Window {
+    Vditor?: VditorMethods;
+  }
+}
+
+let vditorLoading: Promise<VditorMethods> | null = null;
+
+/**
+ * 按需加载自托管的 Vditor 方法集，并缓存 Promise（并发调用只注入一次 script）。
+ *
+ * 为什么不用打包器 import：见文件顶部的类型导入注释——npm 包内含外链字符串，
+ * 打进 bundle 会踩红线 8。改成运行时加载后，产物里只剩我们自己的代码，
+ * 而 method.min.js 由 fetch-vditor 脚本消毒并随应用一起分发，离线可用。
+ */
+async function loadVditor(): Promise<VditorMethods> {
+  if (window.Vditor) {
+    return window.Vditor;
+  }
+  vditorLoading ??= new Promise<VditorMethods>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = VDITOR_METHOD_SRC;
+    script.async = true;
+    script.onload = () => {
+      const loaded = window.Vditor;
+      if (loaded) {
+        resolve(loaded);
+      } else {
+        // 脚本加载成功但没挂上全局：多半是 vendor 资源被裁坏了
+        reject(new Error(`Vditor loaded but global is missing: ${VDITOR_METHOD_SRC}`));
+      }
+    };
+    script.onerror = () => {
+      // 最典型的原因：忘了跑 scripts/fetch-vditor.mjs（vendor/ 不入库）
+      vditorLoading = null;
+      reject(new Error(`Failed to load ${VDITOR_METHOD_SRC} — run scripts/fetch-vditor.mjs`));
+    };
+    document.head.appendChild(script);
+  });
+  return vditorLoading;
+}
 
 /**
  * DOMPurify 配置（XSS 第二层）。
@@ -395,10 +462,27 @@ function buildPreviewOptions(theme: ResolvedTheme) {
       sanitize: true,
       // 中文与西文之间自动加空格（DG 4.1 选型理由）
       autoSpace: true,
-      // 目录页由导出模板自己生成，正文不插 TOC
-      toc: false,
+      /**
+       * `[TOC]` 渲染为文内目录（UPGRADE_PLAN 4.2 的决策项）。
+       *
+       * 曾经是 false，代价是文档里的 `[TOC]` 原样漏成一行裸文本——用户看见的是
+       * 「这个查看器连目录都不认识」。开启后 lute 输出 `div.vditor-toc`
+       * （条目形如 `<span data-target-id="…">`），再由 transformToc() 换成
+       * 带 `data-md-anchor` 的 nav，点击走 App 层既有的 `#锚点` 委托。
+       *
+       * 注意 lute 的 data-target-id 用的是**它自己**的去重规则（同名标题第二个是
+       * `同名-`），与 buildOutline 的 `-2` 后缀不是一套，所以 transformToc 必须
+       * 排在 buildOutline 之后并按文档序重新对位，详见该函数的注释。
+       */
+      toc: true,
       // ==高亮== 语法，只读查看器里纯展示，无副作用
       mark: true,
+      /**
+       * 这里刻意不写 `callout`：Vditor 的 mergeOptions 是**深合并**，
+       * 缺省项会落到 Constants.MARKDOWN_OPTIONS 的 `callout: true`，
+       * 于是 `> [!NOTE]` 已经由 lute 解析成 `div.callout[data-subtype]`（4.1 的原料）。
+       * 写死 false 会把 GitHub alerts 打回裸引用块，写死 true 是重复声明——都不如不写。
+       */
     },
   };
 }
@@ -701,6 +785,572 @@ function wrapTables(container: HTMLElement): void {
   }
 }
 
+/* ══ 4.5 排版后处理（UPGRADE_PLAN 4.1 / 4.2） ═══════════════════
+   本节全部是**DOM 层**改写：不碰 lute、不碰 md2html 的实现，只消费它们的产物。
+   理由有二：① 解析器是自托管的第三方产物，改它等于分叉维护；
+   ② DOM 层能拿到「净化之后、渲染器之前」这个唯一安全的时机——
+   此刻 HTML 已过 DOMPurify，KaTeX/Mermaid 还没往里塞东西，改结构最安全也最省事。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 4.1 GitHub alerts ─────────────────────────────────────────
+   五类告警块 `> [!NOTE|TIP|IMPORTANT|WARNING|CAUTION]`，当下事实标准。
+
+   【两条来路都要接】
+   ① lute 的 callout（默认开，见 buildPreviewOptions 的注释）会先一步把它变成
+      `div.callout[data-subtype=NOTE]` + `.callout-info`（emoji 图标 + 英文标题）
+      + `.callout-content`。它的问题不是没解析，而是**样式表没进本应用**
+      （vditor/dist/index.css 不在引入链里，那套 --callout-* 变量全是空的），
+      于是渲染出来是「✏️Note」加一段裸正文，既没有语义左边线也不是中文。
+   ② 万一 callout 被关掉（或换了解析内核），产物就是普通 blockquote，
+      首段以 `[!NOTE]` 字面量开头。
+
+   两条路统一归一到同一套 `.md-alert` DOM，样式只写一份。
+   ─────────────────────────────────────────────────────────── */
+
+const ALERT_KINDS = ["note", "tip", "important", "warning", "caution"] as const;
+type AlertKind = (typeof ALERT_KINDS)[number];
+
+/** 大小写不敏感地把类型名收敛成 AlertKind；不认识的返回 null */
+function toAlertKind(raw: string): AlertKind | null {
+  const lower = raw.trim().toLowerCase();
+  for (const kind of ALERT_KINDS) {
+    if (kind === lower) {
+      return kind;
+    }
+  }
+  return null;
+}
+
+/**
+ * 类型名文案。走 i18n（代码内不写内联中文），键值对见 src/i18n/zh-CN.ts 的 `alert` 组。
+ * 语义色映射写在样式层（markdown.css 的 `.md-alert[data-alert=…]`）而不是这里：
+ * 颜色是 Token 的事，渲染层只负责把类型名落成 data 属性。
+ */
+const ALERT_TITLE: Record<AlertKind, string> = {
+  note: t.alert.note,
+  tip: t.alert.tip,
+  important: t.alert.important,
+  warning: t.alert.warning,
+  caution: t.alert.caution,
+};
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** 内联图标的最小描述单元（不引图标库：五个图标而已，多一个依赖不值当） */
+interface IconShape {
+  readonly tag: "path" | "circle";
+  readonly attrs: Readonly<Record<string, string>>;
+}
+
+/**
+ * 五枚 16px 线性图标（viewBox 24、strokeWidth 1.5、currentColor），
+ * 语义与 GitHub 同构：信息圈 / 灯泡 / 消息框感叹号 / 三角警示 / 八边形警示。
+ */
+const ALERT_ICON: Record<AlertKind, readonly IconShape[]> = {
+  note: [
+    { tag: "circle", attrs: { cx: "12", cy: "12", r: "9.25" } },
+    { tag: "path", attrs: { d: "M12 11v5" } },
+    { tag: "path", attrs: { d: "M12 7.75h.01" } },
+  ],
+  tip: [
+    { tag: "path", attrs: { d: "M9.5 18.5h5" } },
+    { tag: "path", attrs: { d: "M10.5 21.5h3" } },
+    {
+      tag: "path",
+      attrs: {
+        d: "M15.1 14.4c.2-1 .7-1.8 1.4-2.5A4.9 4.9 0 0 0 18 8.4a6 6 0 0 0-12 0c0 1.3.5 2.6 1.5 3.5.7.7 1.2 1.5 1.4 2.5",
+      },
+    },
+  ],
+  important: [
+    {
+      tag: "path",
+      attrs: { d: "M21 14.5a2 2 0 0 1-2 2H8l-4 4V5.5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z" },
+    },
+    { tag: "path", attrs: { d: "M12.5 7.5v4" } },
+    { tag: "path", attrs: { d: "M12.5 14h.01" } },
+  ],
+  warning: [
+    {
+      tag: "path",
+      attrs: {
+        d: "M10.3 3.9 2.1 17.9a2 2 0 0 0 1.7 3h16.4a2 2 0 0 0 1.7-3l-8.2-14a2 2 0 0 0-3.4 0z",
+      },
+    },
+    { tag: "path", attrs: { d: "M12 9.5v4" } },
+    { tag: "path", attrs: { d: "M12 17h.01" } },
+  ],
+  caution: [
+    {
+      tag: "path",
+      attrs: {
+        d: "M15.3 2.75H8.7a2 2 0 0 0-1.4.6L2.65 8a2 2 0 0 0-.6 1.4v5.2a2 2 0 0 0 .6 1.4l4.65 4.65a2 2 0 0 0 1.4.6h6.6a2 2 0 0 0 1.4-.6L21.35 16a2 2 0 0 0 .6-1.4V9.4a2 2 0 0 0-.6-1.4l-4.65-4.65a2 2 0 0 0-1.4-.6z",
+      },
+    },
+    { tag: "path", attrs: { d: "M12 8v4.5" } },
+    { tag: "path", attrs: { d: "M12 16h.01" } },
+  ],
+};
+
+/** 按描述建内联 SVG。尺寸最终由 CSS 的 1em 接管，属性上的 16 只是无 CSS 时的兜底 */
+function createIcon(shapes: readonly IconShape[]): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.5");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  // 图标是纯装饰：类型名就在旁边，读屏器再念一遍是噪音
+  svg.setAttribute("aria-hidden", "true");
+  for (const shape of shapes) {
+    const node = document.createElementNS(SVG_NS, shape.tag);
+    for (const [name, value] of Object.entries(shape.attrs)) {
+      node.setAttribute(name, value);
+    }
+    svg.appendChild(node);
+  }
+  return svg;
+}
+
+/**
+ * 造一个 `.md-alert` 块：标题行（图标 + 类型名）+ 内容区。
+ * kind 为 null = 作者写了本表之外的类型（如 `[!FOO]`）：不给图标、走中性色，
+ * 但仍然成块——总好过把一坨没有样式的 div 丢在正文里。
+ */
+function buildAlert(kind: AlertKind | null, title: string, body: readonly Node[]): HTMLElement {
+  const alert = document.createElement("div");
+  alert.className = "md-alert";
+  alert.setAttribute("data-alert", kind ?? "default");
+
+  const head = document.createElement("div");
+  head.className = "md-alert-title";
+  if (kind !== null) {
+    head.appendChild(createIcon(ALERT_ICON[kind]));
+  }
+  const label = document.createElement("span");
+  label.textContent = title;
+  head.appendChild(label);
+
+  const content = document.createElement("div");
+  content.className = "md-alert-body";
+  content.append(...body);
+
+  alert.append(head, content);
+  return alert;
+}
+
+/** 来路①：lute 的 callout 产物 → .md-alert */
+function transformCallouts(container: HTMLElement): void {
+  const callouts = Array.from(container.querySelectorAll<HTMLElement>("div.callout[data-subtype]"));
+  for (const callout of callouts) {
+    const subtype = callout.getAttribute("data-subtype") ?? "";
+    const kind = toAlertKind(subtype);
+    const luteTitle = (callout.querySelector(".callout-title")?.textContent ?? "").trim();
+    /**
+     * lute 默认把英文类型名（Note / Tip …）写进 .callout-title；
+     * 只有作者在标记后面另写了文字（`> [!NOTE] 发布前必读`）时它才不同。
+     * 前者换成 i18n 类型名，后者保留作者原文——作者写了标题就是想让人看见。
+     */
+    const isDefaultTitle = luteTitle === "" || luteTitle.toLowerCase() === subtype.toLowerCase();
+    const title = isDefaultTitle ? (kind === null ? subtype : ALERT_TITLE[kind]) : luteTitle;
+
+    const source = callout.querySelector(".callout-content") ?? callout;
+    const body = Array.from(source.childNodes).filter(
+      (node) => !(node instanceof Element && node.classList.contains("callout-info")),
+    );
+    callout.replaceWith(buildAlert(kind, title, body));
+  }
+}
+
+/** 首段开头的 `[!TYPE]` 标记；`\s*` 一并吃掉标记与正文之间的空白 */
+const ALERT_MARKER_RE = /^\s*\[!([A-Za-z]+)\]\s*/;
+
+/**
+ * 从首段里抹掉 `[!NOTE]` 字面量。
+ * 标记必然落在首个文本节点的开头（它是段首纯文本），所以只处理这一个节点；
+ * 紧随其后的 `<br>` 是 `> [!NOTE]\n> 正文` 的换行残留，删掉才不会空一行。
+ */
+function stripAlertMarker(paragraph: Element): void {
+  const firstText = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT).nextNode();
+  if (firstText !== null) {
+    const rest = (firstText.nodeValue ?? "").replace(ALERT_MARKER_RE, "");
+    if (rest === "") {
+      firstText.parentNode?.removeChild(firstText);
+    } else {
+      firstText.nodeValue = rest;
+    }
+  }
+  if (paragraph.firstChild instanceof HTMLBRElement) {
+    paragraph.firstChild.remove();
+  }
+  // 标记独占一行时，抹完就是个空段落：留着会顶出一段空白
+  if (paragraph.childNodes.length === 0) {
+    paragraph.remove();
+  }
+}
+
+/** 来路②：普通 blockquote 且首段以 `[!TYPE]` 开头 → .md-alert */
+function transformAlertBlockquotes(container: HTMLElement): void {
+  for (const quote of Array.from(container.querySelectorAll("blockquote"))) {
+    const first = quote.firstElementChild;
+    if (first === null || first.tagName !== "P") {
+      continue;
+    }
+    const matched = ALERT_MARKER_RE.exec(first.textContent ?? "");
+    if (matched === null) {
+      continue;
+    }
+    const kind = toAlertKind(matched[1]);
+    // 不认识的类型保持普通引用块（与 GitHub 一致：它也只认那五个）
+    if (kind === null) {
+      continue;
+    }
+    stripAlertMarker(first);
+    quote.replaceWith(buildAlert(kind, ALERT_TITLE[kind], Array.from(quote.childNodes)));
+  }
+}
+
+function transformAlerts(container: HTMLElement): void {
+  transformCallouts(container);
+  transformAlertBlockquotes(container);
+}
+
+/* ── 4.2-a emoji 短代码 ─────────────────────────────────────── */
+
+/**
+ * lute 的 emoji 默认就是开的，且**绝大多数短代码直接输出 Unicode 字形**
+ * （`:smile:` → 😄，零资源零请求），所以 4.2 说的"未启用则显式开"实测无需处理。
+ *
+ * 唯一的例外是 GitHub 自定义表情（`:octocat:` / `:trollface:` 等）：lute 会输出
+ * `<img class="emoji" src="${emojiSite}/xxx.png">`，而 emojiSite 指向的
+ * `dist/images/emoji/` **不在 DG 8 自托管白名单内**（scripts/fetch-vditor.mjs 未复制），
+ * 结果必然是一枚裂图。这里直接换回字面短代码：不发请求、不留裂图、语义不丢。
+ *
+ * 类型标注成 boolean 而不是让它收窄成字面量 false：将来若把 images/emoji 纳入白名单，
+ * 改这一个常量即可恢复图片形态，改动不牵连下面的代码。
+ */
+const EMOJI_ASSETS_BUNDLED: boolean = false;
+
+function normalizeEmojiShortcodes(container: HTMLElement): void {
+  if (EMOJI_ASSETS_BUNDLED) {
+    return;
+  }
+  for (const image of Array.from(container.querySelectorAll<HTMLImageElement>("img.emoji"))) {
+    const name = image.getAttribute("alt") ?? image.getAttribute("title") ?? "";
+    if (name === "") {
+      image.remove();
+      continue;
+    }
+    const code = document.createElement("span");
+    code.className = "md-emoji-code";
+    code.textContent = `:${name}:`;
+    image.replaceWith(code);
+  }
+}
+
+/* ── 4.2-b [TOC] 文内目录 ───────────────────────────────────── */
+
+/** 整段只有 `[TOC]` 的段落（lute 没吃掉的残留形态），一律静默移除 */
+const BARE_TOC_RE = /^\[toc\]$/i;
+
+/**
+ * 目录项在原 `.vditor-toc` 里的嵌套深度（1 起，封顶 6）。
+ * 用 DOM 嵌套算而不是查标题级别：`## 二级` 开头的文档里 lute 的目录从第一层起排，
+ * 按标题级别缩进会凭空多出一层空缩进。
+ */
+function tocDepth(entry: Element, block: Element): number {
+  let depth = 0;
+  let node: Element | null = entry.parentElement;
+  while (node !== null && node !== block) {
+    if (node.tagName === "UL" || node.tagName === "OL") {
+      depth += 1;
+    }
+    node = node.parentElement;
+  }
+  return Math.min(Math.max(depth, 1), 6);
+}
+
+/**
+ * 目录项 → 最终 heading id 的三级对位（**必须在 buildOutline 之后调用**）。
+ *
+ * lute 写进 `data-target-id` 的是它自己算的 id，与 buildOutline 兜底/去重之后的
+ * 最终 id 并不总是一致（同名标题 lute 给 `同名-`、我们给 `同名-2`；纯符号标题
+ * lute 给 `---`、我们给 `heading-3`）。直接信它就会点出一堆死链接，
+ * 所以：先按文档序对位（目录与标题同源同序，正常文档 100% 命中），
+ * 再退回「原 id 确实存在」，最后退回按标题文本找。三级都不中就渲染成不可点的纯文本。
+ */
+function resolveTocTarget(
+  entry: Element,
+  headings: readonly HTMLElement[],
+  index: number,
+  text: string,
+): string {
+  const byIndex = index < headings.length ? headings[index] : null;
+  if (byIndex !== null && headingText(byIndex) === text) {
+    return byIndex.id;
+  }
+  const declared = entry.getAttribute("data-target-id") ?? "";
+  if (declared !== "" && headings.some((heading) => heading.id === declared)) {
+    return declared;
+  }
+  return headings.find((heading) => headingText(heading) === text)?.id ?? "";
+}
+
+/**
+ * `div.vditor-toc` → `nav.md-toc`（4.2 的决策：渲染成文内目录而不是丢弃）。
+ *
+ * 条目一律输出 `<a href="#id" data-md-anchor="id">`：
+ * `#锚点` 形态 App 层的链接委托（1.1）已经在处理，会走 jumpToHeading——
+ * 平滑 250ms + 16px 留白 + 大纲高亮同步，与点大纲完全同一条路径，
+ * 本函数因此不需要（也不应该）自己挂任何点击监听。
+ * `data-md-anchor` 是给 App 层的显式抓手：需要区分「目录项」与普通文内锚点时按它选。
+ *
+ * 文档一个标题都没有时 lute 会把 `[toc]` 字面量塞进这个 div（实测），
+ * 此时整块删掉——宁可什么都不显示，也不能漏出裸标记。
+ */
+function transformToc(container: HTMLElement): void {
+  const blocks = Array.from(container.querySelectorAll<HTMLElement>(".vditor-toc"));
+  if (blocks.length > 0) {
+    const headings = Array.from(container.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6"));
+    for (const block of blocks) {
+      const entries = Array.from(block.querySelectorAll<HTMLElement>("[data-target-id]"));
+      const list = document.createElement("ul");
+      list.className = "md-toc-list";
+
+      entries.forEach((entry, index) => {
+        const text = (entry.textContent ?? "").replace(/\s+/g, " ").trim();
+        if (text === "") {
+          return;
+        }
+        const item = document.createElement("li");
+        item.className = "md-toc-item";
+        item.setAttribute("data-level", String(tocDepth(entry, block)));
+
+        const id = resolveTocTarget(entry, headings, index, text);
+        if (id === "") {
+          item.textContent = text;
+        } else {
+          const link = document.createElement("a");
+          link.setAttribute("href", `#${id}`);
+          link.setAttribute("data-md-anchor", id);
+          link.textContent = text;
+          item.appendChild(link);
+        }
+        list.appendChild(item);
+      });
+
+      if (list.childElementCount === 0) {
+        block.remove();
+        continue;
+      }
+      const nav = document.createElement("nav");
+      nav.className = "md-toc";
+      const title = document.createElement("div");
+      title.className = "md-toc-title";
+      title.textContent = t.preview.tocTitle;
+      nav.append(title, list);
+      block.replaceWith(nav);
+    }
+  }
+
+  // 兜底：`[TOC]` 被写在段落中间等 lute 不认的位置时，段落里会留下裸标记
+  for (const paragraph of Array.from(container.querySelectorAll("p"))) {
+    if (paragraph.children.length === 0 && BARE_TOC_RE.test((paragraph.textContent ?? "").trim())) {
+      paragraph.remove();
+    }
+  }
+}
+
+/* ── 4.2-c 链接标注（状态栏悬停显示目标 URL 的原料） ─────────── */
+
+/** 真外链：只认 http(s)，其余协议一律归 other（App 层的分发规则同源） */
+const LINK_EXTERNAL_RE = /^https?:\/\//i;
+/**
+ * 带协议前缀（mailto: / file: / javascript: …）。
+ * 注意 Windows 盘符 `D:/…` 同样满足这个形状，所以用它之前必须先排除盘符，
+ * 见下面 annotateLinks 里的 isWindowsPath。
+ */
+const LINK_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
+
+/**
+ * 给正文链接打上 `data-link-kind` 与 `data-link-href`，本地链接再补 `data-link-path`。
+ *
+ * 这是给 **App 层状态栏「悬停显示目标」**（4.2）准备的原料：状态栏在 App.tsx，不归本文件改，
+ * 它只要在阅读区委托 mouseover/mouseout，读 `[data-link-href]` / `[data-link-path]` 即可，
+ * 不必再把 href 解析规则抄一遍（那就是第二份真相）。
+ *
+ * 刻意**不**判断"是不是 .md"：支持的扩展名清单是 App 层的 SUPPORTED_EXTENSIONS，
+ * 本文件不复制它，只如实给出「这是本地路径 + 解析后的绝对路径」。
+ * 标题锚点 `a.vditor-anchor` 跳过：它是 UI 而非正文链接，状态栏显示 `#id` 只会闪。
+ */
+function annotateLinks(container: HTMLElement, baseDir: string | null): void {
+  for (const link of Array.from(container.querySelectorAll<HTMLAnchorElement>("a[href]"))) {
+    if (link.classList.contains("vditor-anchor")) {
+      continue;
+    }
+    const href = (link.getAttribute("href") ?? "").trim();
+    if (href === "") {
+      continue;
+    }
+    link.setAttribute("data-link-href", href);
+
+    if (href.startsWith("#")) {
+      link.setAttribute("data-link-kind", "anchor");
+      continue;
+    }
+    if (LINK_EXTERNAL_RE.test(href)) {
+      link.setAttribute("data-link-kind", "external");
+      continue;
+    }
+    /**
+     * 盘符必须先于协议判断：`D:/docs/x.md` 同时满足 LINK_SCHEME_RE
+     * （单字母 + 冒号在 URL 语法里就是合法 scheme），先判协议会把 Windows 上
+     * 最常见的绝对路径整类误判成"未知协议"，状态栏与右键菜单跟着一起错。
+     */
+    const isWindowsPath = WINDOWS_ABS_RE.test(href) || UNC_ABS_RE.test(href);
+    if (!isWindowsPath && LINK_SCHEME_RE.test(href)) {
+      link.setAttribute("data-link-kind", "other");
+      continue;
+    }
+
+    link.setAttribute("data-link-kind", "local");
+    // 只切 #fragment：? 在本地文件名里是合法字符，切了反而指不到文件
+    const hashAt = href.indexOf("#");
+    const rawPath = tryDecodePath(hashAt === -1 ? href : href.slice(0, hashAt));
+    if (rawPath === "") {
+      continue;
+    }
+    if (WINDOWS_ABS_RE.test(rawPath) || UNC_ABS_RE.test(rawPath)) {
+      link.setAttribute("data-link-path", rawPath);
+    } else if (baseDir !== null && baseDir !== "") {
+      link.setAttribute("data-link-path", resolveLocalPath(baseDir, rawPath));
+    }
+  }
+}
+
+/* ── 6.5 渲染失败态（Mermaid 语法错误 / KaTeX 失败） ──────────── */
+
+/** 交给 Mermaid 之前先把原始代码存下来：它会把元素的 innerHTML 整个换掉 */
+const MERMAID_SOURCE_ATTR = "data-mermaid-source";
+/** 已经卡片化过，避免超时补扫时反复重建 */
+const RENDER_ERROR_ATTR = "data-render-error";
+
+/**
+ * Mermaid v11 失败时注入的错误 SVG 的特征选择器。
+ * 三个都列上是因为版本间换过实现：老版本只有 `.error-icon/.error-text`，
+ * 新版本才补了 `aria-roledescription="error"`；命中任意一个即判失败。
+ */
+const MERMAID_ERROR_SELECTOR = '[aria-roledescription="error"], .error-icon, .error-text';
+
+function captureDiagramSources(container: HTMLElement): void {
+  for (const diagram of container.querySelectorAll<HTMLElement>(".language-mermaid")) {
+    if (!diagram.hasAttribute(MERMAID_SOURCE_ATTR)) {
+      diagram.setAttribute(MERMAID_SOURCE_ATTR, diagram.textContent ?? "");
+    }
+  }
+}
+
+/**
+ * 失败卡片：复用 `.md-alert` 的 caution 形态（同一套视觉语言，样式只写一份），
+ * 标题换成「图表/公式渲染失败」，正文给错误信息 + 原始代码回退。
+ * 回退代码块**不挂 language-* 类**：那样才会被 enhanceCodeBlocks 认领，
+ * 用户可以一键复制到 Mermaid/KaTeX 官方编辑器里继续排查。
+ */
+function buildRenderErrorCard(title: string, message: string, source: string): HTMLElement {
+  const body: Node[] = [];
+  if (message !== "") {
+    const line = document.createElement("p");
+    line.className = "md-render-error-message";
+    line.textContent = message;
+    body.push(line);
+  }
+  if (source.trim() !== "") {
+    const block = document.createElement("pre");
+    const code = document.createElement("code");
+    code.textContent = source.replace(/\n$/, "");
+    block.appendChild(code);
+    body.push(block);
+  }
+  return buildAlert("caution", title, body);
+}
+
+/**
+ * Mermaid 失败态卡片化（4.2）。
+ *
+ * 此前的呈现是未定义的：Vditor 的 catch 分支把 Mermaid 自带的"炸弹图"外加一行
+ * `<small>` 塞进元素（没有任何样式约束），而 8s 就绪超时那条路更糟——正文里留一坨裸代码文本。
+ * 现在一律换成「标题 + 错误信息 + 原始代码」的卡片。
+ *
+ * 判失败的两个条件：命中错误 SVG 特征，或者压根没有 svg（渲染器没跑成/超时）。
+ * 本函数只在 settled 之后与超时补扫时调用，所以"没有 svg"就是真的坏了。
+ * 即便误判也能自愈：Mermaid 迟到的成功回调会把 innerHTML 整个覆盖成正确的图。
+ */
+function transformDiagramErrors(container: HTMLElement): void {
+  for (const diagram of Array.from(container.querySelectorAll<HTMLElement>(".language-mermaid"))) {
+    if (diagram.getAttribute(RENDER_ERROR_ATTR) === "true") {
+      continue;
+    }
+    const source = diagram.getAttribute(MERMAID_SOURCE_ATTR) ?? "";
+    if (source.trim() === "") {
+      continue;
+    }
+    const failed =
+      diagram.querySelector(MERMAID_ERROR_SELECTOR) !== null || diagram.querySelector("svg") === null;
+    if (!failed) {
+      continue;
+    }
+    // Vditor 把 Mermaid 的报错文本放在一个 <small> 里，取到就用它，取不到给通用文案
+    const message = (diagram.querySelector("small")?.textContent ?? "").trim();
+    diagram.setAttribute(RENDER_ERROR_ATTR, "true");
+    diagram.replaceChildren(
+      buildRenderErrorCard(t.preview.diagramError, message, source),
+    );
+  }
+}
+
+/** mhchem 提供的化学式宏；命中就说人话，而不是甩一句 Undefined control sequence */
+const CHEM_MACRO_RE = /\\(?:ce|cee|pu)\s*\{/;
+
+/**
+ * KaTeX 失败态卡片化（4.2 的 `\ce{}` 决策项）。
+ *
+ * 【为什么不打包 mhchem】`vditorKatexChemScript` 是 OPTIONAL_ASSET_STUB_IDS 里的占位：
+ * mhchem.min.js（33 KB，node_modules 里现成）**不在 DG 8 自托管白名单**，
+ * 而白名单与 scripts/fetch-vditor.mjs 都不在本次改动范围内（红线 12：白名单要改先与人类确认）。
+ * 于是本批次选「可见的失败」而不是"静默失败"：把 KaTeX 的报错做成卡片，
+ * 命中 `\ce{}` / `\pu{}` 时换成专门的文案，明说是扩展没打包，用户不会去怀疑自己的公式写错了。
+ * 打包 mhchem 是后续动作（见交付说明），改动落地后删掉这条分支即可。
+ *
+ * KaTeX 出错时 Vditor 会把元素 className 改成 `language-math vditor-reset--error`
+ * 并把报错文本写进 innerHTML；`data-math` 在 try 之前就写好了，原文从那里取。
+ */
+function transformFormulaErrors(container: HTMLElement): void {
+  for (const formula of Array.from(container.querySelectorAll<HTMLElement>(".vditor-reset--error"))) {
+    if (formula.getAttribute(RENDER_ERROR_ATTR) === "true") {
+      continue;
+    }
+    const source = formula.getAttribute("data-math") ?? "";
+    const raw = (formula.textContent ?? "").trim();
+    const message = CHEM_MACRO_RE.test(source) ? t.preview.chemNotBundled : raw;
+    formula.setAttribute(RENDER_ERROR_ATTR, "true");
+
+    // 行内公式（span）不能塞块级卡片：那会把整个段落撑断。
+    // 就地换成一枚 danger 色的行内 chip，完整信息挂 title，悬停可见。
+    if (formula.tagName === "SPAN") {
+      const chip = document.createElement("code");
+      chip.className = "md-inline-error";
+      chip.textContent = source === "" ? raw : source;
+      chip.title = message;
+      formula.replaceChildren(chip);
+      continue;
+    }
+    formula.replaceChildren(buildRenderErrorCard(t.preview.formulaError, message, source));
+  }
+}
+
 /* ── 5. 代码块增强（语言标签 + 复制按钮） ───────────────────── */
 
 function isDiagramCode(element: Element): boolean {
@@ -936,7 +1586,10 @@ export function renderOutline(
   targetElement: HTMLElement,
 ): OutlineNode[] {
   const outline = buildOutline(contentElement);
-  Vditor.outlineRender(contentElement, targetElement);
+  // 同步函数，不能 await；调用时机必然在 renderMarkdown 之后，全局已就绪。
+  // 万一没就绪（外部直接调用本函数），跳过官方 DOM 渲染即可——
+  // 我们自己的 outline 树才是大纲面板的数据源，不受影响。
+  window.Vditor?.outlineRender(contentElement, targetElement);
   return outline;
 }
 
@@ -1154,6 +1807,23 @@ function countLines(body: string): number {
   return body === "" ? 0 : body.split(/\r\n|\r|\n/).length;
 }
 
+/**
+ * 正文字数：整篇 textContent 减去 `[TOC]` 展开出来的目录（4.2 开启 toc 后的连带项）。
+ *
+ * 目录里的每一条都是标题文本的副本——作者只写了一行 `[TOC]`，
+ * 直接数 textContent 等于把全篇标题数两遍，状态栏的字数会随「这篇有没有写 [TOC]」
+ * 莫名其妙地跳一截，且越是长文档跳得越多。
+ * 必须在 transformToc **之前**调用（那之后 .vditor-toc 已经换成 nav.md-toc）。
+ */
+function countBodyWords(host: HTMLElement): number {
+  let total = countWords(host.textContent ?? "");
+  for (const toc of host.querySelectorAll(".vditor-toc")) {
+    total -= countWords(toc.textContent ?? "");
+  }
+  // 理论上不会为负（减的是自己的子集），钳一下是防御性的：字数永远不该显示负数
+  return Math.max(total, 0);
+}
+
 /* ── 10. 离屏舞台（2.1 双缓冲） ─────────────────────────────── */
 
 interface RenderStage {
@@ -1279,8 +1949,11 @@ export async function renderMarkdown(options: RenderOptions): Promise<RenderResu
   try {
     ensureOptionalAssetStubs();
 
+    // 0) 取自托管的渲染方法集（首次会注入 method.min.js，之后走缓存）
+    const vditor = await loadVditor();
+
     // 1) Markdown → HTML（lute 内部已按 sanitize:true 过滤一遍，这是第一层）
-    const html = await Vditor.md2html(body, buildPreviewOptions(theme));
+    const html = await vditor.md2html(body, buildPreviewOptions(theme));
 
     // md2html 期间可能已经切走文档：在这里早退，既省掉整条管线，
     // 也避免下面的「大纲/字数即时回填」把新文档刚填好的值冲掉。
@@ -1295,8 +1968,9 @@ export async function renderMarkdown(options: RenderOptions): Promise<RenderResu
     host.classList.add("vditor-reset", "vditor-reset--anchor");
 
     // 统计要在「增强 DOM」之前取，也要在属性卡片插入之前取：
-    // 语言标签、复制按钮、frontmatter 的键值都不属于正文字数
-    charCount = countWords(host.textContent ?? "");
+    // 语言标签、复制按钮、frontmatter 的键值都不属于正文字数；
+    // `[TOC]` 展开出的目录同理，由 countBodyWords 扣掉（见该函数注释）
+    charCount = countBodyWords(host);
 
     // 2.5) frontmatter 落地（card / raw / hidden）
     renderFrontmatter(
@@ -1305,6 +1979,12 @@ export async function renderMarkdown(options: RenderOptions): Promise<RenderResu
       frontmatterRaw,
       options.frontmatterDisplay ?? "card",
     );
+
+    // 2.6) 排版后处理（4.1/4.2）：告警块与 emoji 都在图片改写之前做——
+    //      alerts 会重排 DOM（blockquote → div），emoji 会消掉一批 img，
+    //      放在前面能让后续两步少遍历一点，也避免对刚建好的节点重复加工。
+    transformAlerts(host);
+    normalizeEmojiShortcodes(host);
 
     // 3) 图片：本地改写 + 外链拦截
     rewriteImages(host, options.baseDir, abort.signal);
@@ -1317,10 +1997,17 @@ export async function renderMarkdown(options: RenderOptions): Promise<RenderResu
     options.onOutlineReady?.(outline);
     options.onStatsReady?.(buildStats(charCount));
 
+    // 4.5) 文内目录必须排在 buildOutline 之后：标题 id 到那一步才定稿（见 transformToc）
+    transformToc(host);
+    // 4.6) 链接标注：放在最后，连目录项一起打上（状态栏悬停显示目标 URL 的原料）
+    annotateLinks(host, options.baseDir);
+
     // 5) 三个渲染器（产物来自本地可信库；Mermaid 另有专用过滤，见 purifyDiagrams）
-    Vditor.highlightRender(buildHljsOptions(theme), host, VDITOR_LOCAL_CDN);
-    Vditor.mathRender(host, { cdn: VDITOR_LOCAL_CDN, math: buildMathOptions() });
-    Vditor.mermaidRender(host, VDITOR_LOCAL_CDN, theme);
+    //    先存一份图表原文：mermaidRender 会把元素 innerHTML 整个换掉，失败卡片要用它回退
+    captureDiagramSources(host);
+    vditor.highlightRender(buildHljsOptions(theme), host, VDITOR_LOCAL_CDN);
+    vditor.mathRender(host, { cdn: VDITOR_LOCAL_CDN, math: buildMathOptions() });
+    vditor.mermaidRender(host, VDITOR_LOCAL_CDN, theme);
 
     const settled = await waitForRenderSettled(host, timers, cancelled);
 
@@ -1331,6 +2018,11 @@ export async function renderMarkdown(options: RenderOptions): Promise<RenderResu
     }
 
     purifyDiagrams(host);
+
+    // 6.5) 渲染失败态卡片化（4.2）：必须排在过滤之后、代码块增强之前——
+    //      过滤之后才知道图表最终长什么样；增强之前才能让回退代码块顺带拿到复制按钮
+    transformDiagramErrors(host);
+    transformFormulaErrors(host);
 
     // 7) 代码块增强（在高亮之后做：hljs 会重写 innerHTML，但 textContent 不变）
     //    仍在离屏阶段完成：监听器随节点一起搬家，搬完即可用
@@ -1350,12 +2042,17 @@ export async function renderMarkdown(options: RenderOptions): Promise<RenderResu
     stage.dispose();
 
     // 8) 超时收尾：Mermaid 可能在超时之后才吐出 SVG，补两次兜底过滤（此时节点已在真实容器里）
+    //    过滤完顺手再判一次失败态：迟到的成功会自己覆盖回正确的图，迟到的失败则在这里被卡片接住，
+    //    两种迟到都不会留下"空白或半成品"（4.2）。
     if (!settled) {
       for (const at of DIAGRAM_RESWEEP_MS) {
         const timer = window.setTimeout(() => {
           timers.delete(timer);
           if (!disposed) {
             purifyDiagrams(container);
+            transformDiagramErrors(container);
+            // KaTeX 同样可能在超时之后才吐出错误（它整条链都在 addScript 的 then 里）
+            transformFormulaErrors(container);
           }
         }, at);
         timers.add(timer);

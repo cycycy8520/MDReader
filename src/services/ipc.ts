@@ -314,6 +314,16 @@ export async function windowClose(): Promise<void> {
   return getCurrentWindow().close();
 }
 
+/**
+ * 设置窗口标题（UPGRADE_PLAN 3.3）：打开文档后带上文件名，
+ * 让任务栏悬停预览与 Alt-Tab 能区分开多个窗口 —— 全都叫 "MDNaonao" 时没法认。
+ * 关闭文档/出错时由调用方传回纯应用名。
+ * 权限：capabilities 的 core:window:allow-set-title。
+ */
+export async function windowSetTitle(title: string): Promise<void> {
+  return getCurrentWindow().setTitle(title);
+}
+
 /** 当前是否为最大化态（用于切换按钮图标：方框 ⇄ 双层方框） */
 export async function windowIsMaximized(): Promise<boolean> {
   return getCurrentWindow().isMaximized();

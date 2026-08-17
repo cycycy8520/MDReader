@@ -31,6 +31,16 @@
  *   1.7 阅读区可聚焦 + 打开后自动聚焦（键盘翻页生效）、Esc 语义链、点击已打开文件不重开；
  *   1.8 file-removed 警示条、失效条目的出路、拖入不支持类型的 danger 反馈、工具条文字不可选中。
  *
+ * 批次 3「打开方式」本文件负责的部分（UPGRADE_PLAN 3.3）：
+ *   窗口标题带当前文件名（任务栏/Alt-Tab 里能认出是哪一篇），关闭/出错回落纯应用名；
+ *   禅模式 F11：**纯渲染层抑制**——左栏/大纲/顶栏工具区不渲染，但 settings 里的
+ *   左栏折叠态与大纲钉住态一个字都不改，所以退出时天然回到原样（不是"无脑全展开"）。
+ *
+ * 批次 3「左栏顺手化」本文件负责的部分（UPGRADE_PLAN 3.4）：
+ *   条目 hover/键盘聚焦时右侧浮现 置顶 与 ⋯ 两个 16px 钮（仅变色不铺底，行内不出现第二块底色）；
+ *   列表 role=listbox + roving tabindex，↑↓ 跨分组连续移动、Home/End/Enter，过滤框 ↓ 直落第一行；
+ *   置顶/取消置顶/移除后把被操作的条目 scrollIntoView({block:"nearest"}) 拉回视野，焦点不丢。
+ *
  * 批次 3「应用内右键菜单」本文件负责的部分（UPGRADE_PLAN 3.2 / 附录 A）：
  *   全局 contextmenu 委托 → 按命中目标选四套菜单之一（正文 / 链接 / 图片 / 最近文件条目），
  *   输入框与可编辑区一律放行（保留系统菜单的粘贴与输入法）；菜单外壳在
@@ -48,11 +58,14 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  // 与 DOM 的 KeyboardEvent 重名，React 合成事件在本文件一律走别名
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type RefObject,
 } from "react";
 
 import { ContextMenu, type MenuNode } from "./components/ContextMenu";
+import { FindBar } from "./components/FindBar";
 import {
   buildDocumentMenu,
   buildImageMenu,
@@ -79,6 +92,7 @@ import {
   windowClose,
   windowIsMaximized,
   windowMinimize,
+  windowSetTitle,
   windowToggleMaximize,
   type AppInfo,
 } from "./services/ipc";
@@ -89,7 +103,11 @@ import {
   type SessionErrorKind,
   type SessionPhase,
 } from "./stores/fileSession";
-import { useRecentFilesStore } from "./stores/recentFiles";
+import {
+  normalizePath,
+  useRecentFilesStore,
+  type RecentGroupId,
+} from "./stores/recentFiles";
 import {
   readingStyleVars,
   useSettingsStore,
@@ -196,14 +214,15 @@ function baseNameOf(path: string): string {
  * Windows 路径比较：分隔符与大小写都不敏感。
  * 后端 watch 事件回传的路径与 readMarkdown 回传的路径可能来自不同拼接方式，
  * 直接 === 比较会漏判，导致外部修改后不刷新。
+ *
+ * 3.4：归一化本体搬到 recentFiles 的 normalizePath，前端只此一份口径——
+ * 「同一文件不同大小写/分隔符」的去重与这里的比较必须永远同进同退。
  */
 function samePath(a: string | null, b: string | null): boolean {
   if (a === null || b === null) {
     return a === b;
   }
-  return (
-    a.replace(/\//g, "\\").toLowerCase() === b.replace(/\//g, "\\").toLowerCase()
-  );
+  return normalizePath(a) === normalizePath(b);
 }
 
 /**
@@ -236,8 +255,6 @@ function formatStamp(openedAt: number, todayStart: number): string {
   }
   return `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
-
-type RecentGroupId = "pinned" | "today" | "yesterday" | "week" | "earlier";
 
 const GROUP_ORDER: readonly RecentGroupId[] = [
   "pinned",
@@ -766,6 +783,28 @@ function IconChevron(props: IconProps) {
   );
 }
 
+/**
+ * 置顶：图钉。刻意画成「钉头 + 钉身」而不是实心三角，
+ * 16px 下描边 1.5 的实心块会糊成一坨，轮廓型在小尺寸更清楚。
+ */
+function IconPin(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <path d="M9 4h6l-1 5 3 3v1.5H7V12l3-3-1-5Z" />
+      <path d="M12 13.5V20" />
+    </Glyph>
+  );
+}
+
+/** 更多操作：横向三点（点开走右键菜单那一套，附录 A.2） */
+function IconMore(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <path d="M6 12h.01M12 12h.01M18 12h.01" />
+    </Glyph>
+  );
+}
+
 function IconFile(props: IconProps) {
   return (
     <Glyph {...props}>
@@ -967,6 +1006,11 @@ interface TopBarProps {
   /** file watch 刷新后的 ● 指示（DG 6.4-7） */
   readonly refreshed: boolean;
   readonly outlineOpen: boolean;
+  /**
+   * 禅模式（3.3）：工具区整体不渲染，只留窗口三键与拖动区——
+   * 无边框窗口一旦把三键也藏了就没法关，那不是沉浸，是把用户关在里面。
+   */
+  readonly zen: boolean;
   readonly onToggleSidebar: () => void;
   readonly onToggleOutline: () => void;
   readonly onOpenFile: () => void;
@@ -981,6 +1025,7 @@ function TopBar({
   path,
   refreshed,
   outlineOpen,
+  zen,
   onToggleSidebar,
   onToggleOutline,
   onOpenFile,
@@ -992,17 +1037,19 @@ function TopBar({
       data-tauri-drag-region
       className="relative flex h-topbar shrink-0 items-center bg-panel pl-1.5 after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[var(--md-border-l2)] after:content-['']"
     >
-      <div data-tauri-drag-region className="flex shrink-0 items-center gap-2">
-        <IconButton label={t.topbar.toggleSidebar} onClick={onToggleSidebar}>
-          <IconPanelLeft />
-        </IconButton>
-        <span
-          data-tauri-drag-region
-          className="text-ui font-medium text-primary"
-        >
-          {t.app.name}
-        </span>
-      </div>
+      {zen ? null : (
+        <div data-tauri-drag-region className="flex shrink-0 items-center gap-2">
+          <IconButton label={t.topbar.toggleSidebar} onClick={onToggleSidebar}>
+            <IconPanelLeft />
+          </IconButton>
+          <span
+            data-tauri-drag-region
+            className="text-ui font-medium text-primary"
+          >
+            {t.app.name}
+          </span>
+        </div>
+      )}
 
       <div
         data-tauri-drag-region
@@ -1028,29 +1075,42 @@ function TopBar({
         </span>
       </div>
 
-      <nav className="flex shrink-0 items-center gap-0.5 pr-1.5">
-        <IconButton label={t.topbar.open} onClick={onOpenFile}>
-          <IconFolderOpen />
-        </IconButton>
-        {/* 查找在批次 3 点亮，导出/分享在 M2；未实现一律 disabled，不写占位 onClick。
-            「更多」菜单在批次 3 的右键菜单一并落地，无内容期间直接不画。 */}
-        <IconButton label={t.topbar.find} disabled>
-          <IconSearch />
-        </IconButton>
-        <IconButton
-          label={t.topbar.outline}
-          onClick={onToggleOutline}
-          active={outlineOpen}
-        >
-          <IconOutline />
-        </IconButton>
-        <IconButton label={t.topbar.export} disabled>
-          <IconExport />
-        </IconButton>
-        <IconButton label={t.topbar.share} disabled>
-          <IconShare />
-        </IconButton>
-      </nav>
+      {zen ? null : (
+        <nav className="flex shrink-0 items-center gap-0.5 pr-1.5">
+          <IconButton label={t.topbar.open} onClick={onOpenFile}>
+            <IconFolderOpen />
+          </IconButton>
+          {/* 查找在批次 3 点亮，导出/分享在 M2；未实现一律 disabled，不写占位 onClick。
+              「更多」菜单在批次 3 的右键菜单一并落地，无内容期间直接不画。 */}
+          {/* 无文档时查找没有意义，保持禁用；有文档则唤起浮条（快捷键 Ctrl+F 由 FindBar 自注册） */}
+          <IconButton
+            label={t.topbar.find}
+            disabled={!hasDocument}
+            onClick={
+              hasDocument
+                ? () => {
+                    useUiStateStore.getState().openFind();
+                  }
+                : undefined
+            }
+          >
+            <IconSearch />
+          </IconButton>
+          <IconButton
+            label={t.topbar.outline}
+            onClick={onToggleOutline}
+            active={outlineOpen}
+          >
+            <IconOutline />
+          </IconButton>
+          <IconButton label={t.topbar.export} disabled>
+            <IconExport />
+          </IconButton>
+          <IconButton label={t.topbar.share} disabled>
+            <IconShare />
+          </IconButton>
+        </nav>
+      )}
 
       <WindowControls />
     </header>
@@ -1115,23 +1175,101 @@ function NoticeBar({ notice, shown, onDismiss }: NoticeBarProps) {
 interface SidebarSearchProps {
   readonly value: string;
   readonly onChange: (value: string) => void;
+  /** ↓：焦点直接落到列表第一行（3.4 键盘导航的入口） */
+  readonly onEnterList: () => void;
 }
 
-/** 搜索框：聚焦只把描边换成墨色，不加 ring、不加发光（铁律 6） */
-function SidebarSearch({ value, onChange }: SidebarSearchProps) {
+/**
+ * 搜索框：聚焦只把描边换成墨色，不加 ring、不加发光（铁律 6）。
+ * 有值时右侧出 12px 清空钮（过滤框的通行做法；Esc 清空那条链在 App 的快捷键里）。
+ */
+function SidebarSearch({ value, onChange, onEnterList }: SidebarSearchProps) {
   return (
-    <div className="flex h-input shrink-0 items-center gap-1.5 rounded-row border bg-card px-2.5 focus-within:border-brand">
+    <div className="flex h-input shrink-0 items-center gap-1.5 rounded-row border bg-card pl-2.5 pr-1 focus-within:border-brand">
       <IconSearch size={14} className="shrink-0 text-tertiary" />
       <input
         type="text"
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") {
+            // 拦住默认的"光标移到行尾"，↓ 在过滤框里唯一的语义是进列表
+            event.preventDefault();
+            onEnterList();
+          }
+        }}
         placeholder={t.sidebar.searchPlaceholder}
-        // Esc 语义链要区分「焦点在过滤框」与「焦点在别处」，用属性标记而非 id 选择器
+        // Esc 语义链与 Ctrl+Shift+F 聚焦都按这个属性找框，而不是 id 选择器
         data-sidebar-filter="true"
         className="min-w-0 flex-1 border-none bg-transparent text-ui text-primary outline-none placeholder:text-caption"
       />
+      {/* 无值时整个位置留空（不画禁用态的 ×，那只是噪声）；有值才占位 */}
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center">
+        {value === "" ? null : (
+          <button
+            type="button"
+            aria-label={t.sidebar.clearFilter}
+            title={t.sidebar.clearFilter}
+            onClick={() => onChange("")}
+            className="flex h-6 w-6 items-center justify-center rounded-full text-tertiary hover:bg-hover hover:text-secondary"
+          >
+            <IconClose size={12} />
+          </button>
+        )}
+      </span>
     </div>
+  );
+}
+
+/**
+ * 在条目上就地弹出右键菜单（⋯ 钮，3.4）。
+ *
+ * 刻意**不**另写一套「行操作菜单」：直接朝所在行派发一个 contextmenu 事件，
+ * 让 App 的全局委托按 data-recent-path 认出它并弹出附录 A.2 那一套。
+ * 于是「右键条目」与「点 ⋯」永远是同一份菜单，不存在两处菜单漂移的可能。
+ */
+function openRowMenuAt(trigger: HTMLElement): void {
+  const rect = trigger.getBoundingClientRect();
+  trigger.dispatchEvent(
+    new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: Math.round(rect.left),
+      clientY: Math.round(rect.bottom),
+    }),
+  );
+}
+
+interface RowActionProps {
+  readonly label: string;
+  readonly onRun: (trigger: HTMLElement) => void;
+  readonly children: ReactNode;
+}
+
+/**
+ * 条目右侧的行内动作钮 20px。
+ *
+ * **仅变色不铺底**：行本身 hover 已经是一整块 bg-hover，钮再来一块底色就会在行里
+ * 出现第二个色块，两块半透明底叠在一起还会更深——所以这里唯一的反馈是图标
+ * tertiary → secondary（铁律 5：图标恒比同行文字淡一档，hover 升一档，不越级到 primary）。
+ */
+function RowAction({ label, onRun, children }: RowActionProps) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      // 行是 roving tabindex 的单元，钮不参与 Tab 序列；键盘用户走右键菜单键
+      tabIndex={-1}
+      onClick={(event) => {
+        // 不能让点击冒到行上去触发"打开文件"
+        event.stopPropagation();
+        onRun(event.currentTarget);
+      }}
+      className="flex h-5 w-5 shrink-0 items-center justify-center text-tertiary hover:text-secondary"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -1140,24 +1278,46 @@ interface RecentRowProps {
   readonly selected: boolean;
   /** 路径失效：整行 opacity-40，不换色（DG 6.4 全局条 B） */
   readonly missing: boolean;
+  /** roving tabindex：整个列表只有这一行 tabIndex=0，其余 -1 */
+  readonly roving: boolean;
   readonly onOpen: (path: string) => void;
+  readonly onTogglePin: (path: string) => void;
+  /** 焦点落到本行时把它记为"当前行"（鼠标点击与键盘移动共用一条回路） */
+  readonly onFocus: (path: string) => void;
 }
 
 /**
  * 文件条目 32px：选中态与 hover 共用同一枚半透明底 + 8px 圆角整块高亮，
  * 没有左侧竖条、没有边框、字重不变（铁律 3）。
+ *
+ * 从 button 改成 role="option" 的 div，原因有二：
+ *   1. 行内要放两个动作钮，button 套 button 是非法 HTML（浏览器会拆掉嵌套）；
+ *   2. listbox/option 才是"一列可选条目"的正确语义，roving tabindex 也是它的标配。
+ * 键盘激活（Enter）由列表容器统一接管，见 Sidebar 的 onListKeyDown。
  */
-function RecentRow({ entry, selected, missing, onOpen }: RecentRowProps) {
+function RecentRow({
+  entry,
+  selected,
+  missing,
+  roving,
+  onOpen,
+  onTogglePin,
+  onFocus,
+}: RecentRowProps) {
   const { file } = entry;
+  const pinLabel = file.pinned ? t.contextMenu.unpin : t.contextMenu.pin;
+
   return (
-    <button
-      type="button"
+    <div
+      role="option"
+      aria-selected={selected}
       title={file.path}
-      aria-current={selected ? "true" : undefined}
+      tabIndex={roving ? 0 : -1}
       // 右键菜单的命中标记（附录 A.2 最近文件那一套）：App 的 contextmenu 委托按它取条目
       data-recent-path={file.path}
       onClick={() => onOpen(file.path)}
-      className={`flex h-row w-full items-center gap-1.5 rounded-row px-2 text-left hover:bg-hover ${
+      onFocus={() => onFocus(file.path)}
+      className={`group flex h-row w-full cursor-default select-none items-center gap-1.5 rounded-row px-2 text-left hover:bg-hover ${
         selected ? "bg-hover" : ""
       } ${missing ? "opacity-40" : ""}`}
     >
@@ -1165,59 +1325,107 @@ function RecentRow({ entry, selected, missing, onOpen }: RecentRowProps) {
       <span className="min-w-0 flex-1 truncate text-ui text-primary">
         {file.title}
       </span>
-      <span className="shrink-0 text-ui-xs text-tertiary">{entry.stamp}</span>
-    </button>
+
+      {/*
+        尾部是固定 44px 的槽位：时间戳与两个动作钮**叠在同一处**（钮绝对定位），
+        所以 hover 时不会有任何宽度变化 → 标题的截断点纹丝不动（铁律 2：无位移）。
+        淡入只给 opacity（DG 6.4-1 明确允许的 120ms），底色仍然是瞬时的。
+      */}
+      <span className="relative flex h-full w-11 shrink-0 items-center justify-end">
+        <span className="text-ui-xs text-tertiary transition-opacity duration-fast ease-standard group-hover:opacity-0 group-focus-within:opacity-0">
+          {entry.stamp}
+        </span>
+        <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity duration-fast ease-standard group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+          <RowAction label={pinLabel} onRun={() => onTogglePin(file.path)}>
+            <IconPin size={16} />
+          </RowAction>
+          <RowAction label={t.sidebar.moreActions} onRun={openRowMenuAt}>
+            <IconMore size={16} />
+          </RowAction>
+        </span>
+      </span>
+    </div>
   );
 }
 
 interface RecentGroupBlockProps {
   readonly group: RecentGroupView;
+  readonly collapsed: boolean;
   readonly currentPath: string | null;
   readonly missingPaths: readonly string[];
+  /** 当前应当 tabIndex=0 的行；null = 列表为空 */
+  readonly rovingPath: string | null;
+  readonly onToggleCollapsed: (id: RecentGroupId) => void;
   readonly onOpen: (path: string) => void;
+  readonly onTogglePin: (path: string) => void;
+  readonly onFocusRow: (path: string) => void;
 }
 
+/** 分组块：折叠态**不再是组件内 state**（会被过滤/折栏卸载清零），真源在 recentFiles store */
 function RecentGroupBlock({
   group,
+  collapsed,
   currentPath,
   missingPaths,
+  rovingPath,
+  onToggleCollapsed,
   onOpen,
+  onTogglePin,
+  onFocusRow,
 }: RecentGroupBlockProps) {
-  const [expanded, setExpanded] = useState(true);
-
   return (
     <section className="mt-1 first:mt-0">
       <button
         type="button"
-        aria-expanded={expanded}
-        title={expanded ? t.sidebar.collapseGroup : t.sidebar.expandGroup}
-        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={!collapsed}
+        title={collapsed ? t.sidebar.expandGroup : t.sidebar.collapseGroup}
+        onClick={() => onToggleCollapsed(group.id)}
         className="flex h-row-group w-full items-center gap-1 rounded-row px-2 text-left hover:bg-hover"
       >
         <IconChevron
           size={12}
           className={`shrink-0 text-tertiary transition-transform duration-150 ease-standard ${
-            expanded ? "rotate-90" : ""
+            collapsed ? "" : "rotate-90"
           }`}
         />
         <span className="truncate text-ui text-tertiary">{group.label}</span>
       </button>
 
-      {expanded ? (
-        <div className="space-y-0.5">
+      {collapsed ? null : (
+        <div role="group" aria-label={group.label} className="space-y-0.5">
           {group.entries.map((entry) => (
             <RecentRow
               key={entry.file.path}
               entry={entry}
               selected={samePath(entry.file.path, currentPath)}
               missing={includesPath(missingPaths, entry.file.path)}
+              roving={samePath(entry.file.path, rovingPath)}
               onOpen={onOpen}
+              onTogglePin={onTogglePin}
+              onFocus={onFocusRow}
             />
           ))}
         </div>
-      ) : null}
+      )}
     </section>
   );
+}
+
+/**
+ * 「把某一条拉回视野」的请求（3.4）。
+ *
+ * 置顶/取消置顶会让条目换组重排、移除会让它整条消失——不做任何处理的话，
+ * 用户刚操作过的位置会瞬间跳到别处，焦点也一并丢给 body。
+ * App 在发起操作的同一个事件里记下 { 路径, 操作前所在的行号 }，
+ * 左栏渲染完新列表后据此把焦点与滚动带回去：
+ *   条目还在（置顶/取消置顶）→ 找到它本人；
+ *   条目没了（移除）        → 落到原位置的那一行（列表末尾被删则退到最后一行）。
+ */
+interface RecentReveal {
+  readonly path: string;
+  readonly index: number;
+  /** 自增序号：同一条目连续操作两次也要能触发（对象内容可能完全相同） */
+  readonly seq: number;
 }
 
 interface SidebarProps {
@@ -1226,8 +1434,14 @@ interface SidebarProps {
   readonly filter: string;
   readonly currentPath: string | null;
   readonly missingPaths: readonly string[];
+  readonly collapsedGroups: readonly RecentGroupId[];
+  /** 可见条目的路径序列（已按分组顺序摊平、已剔除折叠组），键盘导航的唯一依据 */
+  readonly flatPaths: readonly string[];
+  readonly reveal: RecentReveal | null;
   readonly onFilterChange: (value: string) => void;
+  readonly onToggleGroup: (id: RecentGroupId) => void;
   readonly onOpen: (path: string) => void;
+  readonly onTogglePin: (path: string) => void;
   readonly onOpenFile: () => void;
 }
 
@@ -1237,13 +1451,150 @@ function Sidebar({
   filter,
   currentPath,
   missingPaths,
+  collapsedGroups,
+  flatPaths,
+  reveal,
   onFilterChange,
+  onToggleGroup,
   onOpen,
+  onTogglePin,
   onOpenFile,
 }: SidebarProps) {
+  const listRef = useRef<HTMLDivElement>(null);
+  /**
+   * roving tabindex 的落点。它只记"用户上次停在哪一条"，
+   * 不参与打开逻辑——选中态（aria-selected）始终跟着当前文档走，两者互不干扰。
+   */
+  const [activePath, setActivePath] = useState<string | null>(null);
+
+  /** DOM 顺序 = flatPaths 顺序（两者都由同一次渲染产出），故可按下标互查 */
+  const rowsOf = useCallback(
+    (): HTMLElement[] =>
+      Array.from(
+        listRef.current?.querySelectorAll<HTMLElement>("[data-recent-path]") ??
+          [],
+      ),
+    [],
+  );
+
+  /**
+   * 把第 index 行变成焦点行。
+   * preventScroll + scrollIntoView({block:"nearest"}) 的组合是刻意的：
+   * 直接 focus() 会把行滚到容器正中（浏览器默认），列表因此整体跳一大截；
+   * nearest 只在真的看不见时才滚，且只滚最小距离。
+   */
+  const focusRowAt = useCallback(
+    (index: number): void => {
+      const rows = rowsOf();
+      if (rows.length === 0) {
+        return;
+      }
+      const clamped = Math.max(0, Math.min(index, rows.length - 1));
+      // 显式标注可空：tsconfig 未开 noUncheckedIndexedAccess，下标取值默认被当成必有值
+      const row: HTMLElement | undefined = rows[clamped];
+      if (row === undefined) {
+        return;
+      }
+      row.focus({ preventScroll: true });
+      row.scrollIntoView({ block: "nearest" });
+    },
+    [rowsOf],
+  );
+
+  const focusFirstRow = useCallback(() => {
+    focusRowAt(0);
+  }, [focusRowAt]);
+
+  /**
+   * 操作后把条目拉回视野（详见 RecentReveal 的注释）。
+   * 初值取挂载那一刻的 seq：Ctrl+B 收起再展开、退出禅模式都会让本组件重挂，
+   * 那时手上还攥着一个旧 reveal——不记账的话，左栏一露面就把焦点抢走。
+   */
+  const handledRevealSeq = useRef(reveal?.seq ?? 0);
+
+  useEffect(() => {
+    if (reveal === null || reveal.seq === handledRevealSeq.current) {
+      return;
+    }
+    handledRevealSeq.current = reveal.seq;
+    const stillThere = flatPaths.findIndex((item) => samePath(item, reveal.path));
+    focusRowAt(stillThere >= 0 ? stillThere : reveal.index);
+    // 依赖**只有** reveal（对象身份每次请求都换）：把 flatPaths 也列进来的话，
+    // file watch 之类的后台刷新会跟着重跑一次、平白抢走焦点。
+    // effect 重跑时闭包必然来自最新一次渲染，读到的 flatPaths 就是刚落地那份。
+  }, [reveal]);
+
+  /**
+   * 列表容器接管方向键（3.4）。
+   * 事件从行上冒泡过来，所以只需一个监听器；跨分组是天然的——
+   * flatPaths 早就把分组摊平了，↓ 到某组最后一条会直接进下一组第一条。
+   */
+  const onListKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+      const rows = rowsOf();
+      if (rows.length === 0) {
+        return;
+      }
+      const active = document.activeElement;
+      const fromDom = rows.findIndex(
+        (row) => row === active || (active !== null && row.contains(active)),
+      );
+      const fromState =
+        activePath === null
+          ? -1
+          : flatPaths.findIndex((item) => samePath(item, activePath));
+      const current = fromDom >= 0 ? fromDom : Math.max(0, fromState);
+
+      switch (event.key) {
+        case "ArrowDown":
+          event.preventDefault();
+          focusRowAt(current + 1);
+          return;
+        case "ArrowUp":
+          event.preventDefault();
+          focusRowAt(current - 1);
+          return;
+        case "Home":
+          event.preventDefault();
+          focusRowAt(0);
+          return;
+        case "End":
+          event.preventDefault();
+          focusRowAt(rows.length - 1);
+          return;
+        case "Enter": {
+          // 分组折叠钮与行内动作钮是真 button，Enter 归它们自己（否则会变成"打开文件"）
+          const target = event.target;
+          if (target instanceof Element && target.closest("button") !== null) {
+            return;
+          }
+          const row: HTMLElement | undefined = rows[current];
+          const rowPath = row?.dataset.recentPath;
+          if (rowPath !== undefined && rowPath !== "") {
+            event.preventDefault();
+            onOpen(rowPath);
+          }
+          return;
+        }
+        default:
+          return;
+      }
+    },
+    [activePath, flatPaths, focusRowAt, onOpen, rowsOf],
+  );
+
+  /** 列表里 tabIndex=0 的那一条：记忆位置失效（被过滤掉/被移除）时退回第一条 */
+  const firstPath: string | undefined = flatPaths[0];
+  const rovingPath =
+    flatPaths.find((item) => samePath(item, activePath)) ?? firstPath ?? null;
+
   return (
     <aside className="flex w-sidebar shrink-0 flex-col border-r border-l1 bg-panel px-3 py-1.5">
-      <SidebarSearch value={filter} onChange={onFilterChange} />
+      <SidebarSearch
+        value={filter}
+        onChange={onFilterChange}
+        onEnterList={focusFirstRow}
+      />
 
       <div className="relative mt-1.5 flex min-h-0 flex-1 flex-col">
         <div className="quiet-bars min-h-0 flex-1 overflow-y-auto pb-4 [scrollbar-gutter:stable]">
@@ -1263,15 +1614,31 @@ function Sidebar({
               )}
             </div>
           ) : (
-            groups.map((group) => (
-              <RecentGroupBlock
-                key={group.id}
-                group={group}
-                currentPath={currentPath}
-                missingPaths={missingPaths}
-                onOpen={onOpen}
-              />
-            ))
+            /* 分组标题钮是 listbox 的直接子元素——严格 ARIA 里 listbox 只该装
+               option/group，但折叠钮必须留在列表里才能被 Tab 到（否则键盘用户
+               永远折不了组）。取"能用"而非"教科书正确"，方向键在 onListKeyDown
+               里已按 option 的语义接管，屏幕阅读器读到的条目序列不受影响。 */
+            <div
+              ref={listRef}
+              role="listbox"
+              aria-label={t.sidebar.recentListLabel}
+              onKeyDown={onListKeyDown}
+            >
+              {groups.map((group) => (
+                <RecentGroupBlock
+                  key={group.id}
+                  group={group}
+                  collapsed={collapsedGroups.includes(group.id)}
+                  currentPath={currentPath}
+                  missingPaths={missingPaths}
+                  rovingPath={rovingPath}
+                  onToggleCollapsed={onToggleGroup}
+                  onOpen={onOpen}
+                  onTogglePin={onTogglePin}
+                  onFocusRow={setActivePath}
+                />
+              ))}
+            </div>
           )}
         </div>
 
@@ -1788,6 +2155,8 @@ export default function App() {
   const recentFilter = useRecentFilesStore((state) => state.filter);
   const missingPaths = useRecentFilesStore((state) => state.missingPaths);
   const setRecentFilter = useRecentFilesStore((state) => state.setFilter);
+  const collapsedGroups = useRecentFilesStore((state) => state.collapsedGroups);
+  const toggleRecentGroup = useRecentFilesStore((state) => state.toggleGroup);
 
   const theme = useSettingsStore((state) => state.theme);
   const resolvedTheme = useSettingsStore((state) => state.resolvedTheme);
@@ -1839,6 +2208,28 @@ export default function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [aboutInfo, setAboutInfo] = useState<AppInfo | null>(null);
   const aboutOpenRef = useRef(false);
+
+  /**
+   * 禅模式（3.3）。**刻意用组件内 state，而不是往 settings/uiState 里塞字段**：
+   *   - uiState 本批次由查找代理占用，多人同改一个 store 必冲突；
+   *   - 更重要的是，禅模式是"这一会儿想清净一下"，不是应该跨重启记住的偏好——
+   *     真写进 settings，用户下次冷启动会对着一个没有左栏也没有工具区的窗口发懵。
+   * 实现上是**纯渲染层抑制**：左栏折叠态（settings.sidebarCollapsed）与大纲钉住态
+   * （settings.outlinePinned）一个字都不改，所以退出时天然回到进入前的样子，
+   * 不需要另存一份"进入前快照"，也不会把本来收着的大纲给"恢复"成展开。
+   * ref 与 state 并存的理由同 aboutOpenRef：快捷键监听不能因为它变化而重挂。
+   */
+  const [zenMode, setZenMode] = useState(false);
+  const zenModeRef = useRef(false);
+
+  /**
+   * 「把左栏某一条拉回视野」的请求（3.4）。发起方是置顶/取消置顶/移除这三个动作，
+   * 消费方是 Sidebar 的 reveal effect。seq 自增保证连点两次同一条也能触发。
+   */
+  const [recentReveal, setRecentReveal] = useState<RecentReveal | null>(null);
+  const revealSeq = useRef(0);
+  /** 可见条目路径序列的镜像，供事件回调无依赖读取（渲染期同步，见下方 useMemo） */
+  const flatRecentPathsRef = useRef<readonly string[]>([]);
 
   const { path, source, revision, silentRefresh, encoding, isLarge } = session;
 
@@ -1955,6 +2346,75 @@ export default function App() {
     useUiStateStore.getState().setOutlineMode(next);
     useSettingsStore.getState().setOutlinePinned(next === "pinned");
   }, []);
+
+  /* ── 禅模式（3.3） ── */
+
+  const setZen = useCallback((on: boolean) => {
+    zenModeRef.current = on;
+    setZenMode(on);
+  }, []);
+
+  const toggleZen = useCallback(() => {
+    setZen(!zenModeRef.current);
+    // 左栏/大纲刚被藏起来，焦点很可能还留在它们上面：不还给阅读区就会"按 PgDn 不翻页"
+    focusReading();
+  }, [focusReading, setZen]);
+
+  /* ── 左栏顺手化（3.4） ── */
+
+  /**
+   * 记下"操作完把哪一条拉回视野"。**必须在动作发生前调用**：
+   * 这一刻的 flatRecentPathsRef 还是操作前的可见序列，移除场景要靠它算出原来的行号。
+   */
+  const requestRecentReveal = useCallback((target: string) => {
+    revealSeq.current += 1;
+    const index = flatRecentPathsRef.current.findIndex((item) =>
+      samePath(item, target),
+    );
+    setRecentReveal({
+      path: target,
+      index: Math.max(index, 0),
+      seq: revealSeq.current,
+    });
+  }, []);
+
+  /** 置顶/取消置顶：条目会换组重排，操作完要能立刻看见它去了哪儿 */
+  const toggleRecentPinned = useCallback(
+    (target: string) => {
+      requestRecentReveal(target);
+      useRecentFilesStore.getState().togglePin(target);
+    },
+    [requestRecentReveal],
+  );
+
+  /** 从列表移除：条目消失，焦点落到它原来那一行（列表末尾则退到最后一行） */
+  const removeRecentEntry = useCallback(
+    (target: string) => {
+      requestRecentReveal(target);
+      useRecentFilesStore.getState().remove(target);
+    },
+    [requestRecentReveal],
+  );
+
+  /**
+   * Ctrl+Shift+F：聚焦左栏过滤框（DG 6.5 已登记）。
+   * 左栏折着的时候先展开——快捷键指向的功能不在屏幕上时，把它请出来才是"生效"，
+   * 静默失败等于又造了一个"按了没反应"。展开要等一帧 DOM 才在。
+   */
+  const focusRecentFilter = useCallback(() => {
+    const pick = (): void => {
+      document
+        .querySelector<HTMLInputElement>('[data-sidebar-filter="true"]')
+        ?.focus();
+    };
+    if (zenModeRef.current) {
+      setZen(false);
+    }
+    if (useSettingsStore.getState().sidebarCollapsed) {
+      useSettingsStore.getState().setSidebarCollapsed(false);
+    }
+    requestAnimationFrame(pick);
+  }, [setZen]);
 
   const flashRefreshed = useCallback(() => {
     window.clearTimeout(refreshTimer.current);
@@ -2390,7 +2850,22 @@ export default function App() {
         }
         if (useUiStateStore.getState().closeTopLayer()) {
           event.preventDefault();
+          return;
         }
+        // 禅模式排在浮层之后退：Esc 的第一语义永远是"关掉挡在眼前的那一层"，
+        // 藏起来的外壳不算挡路，等没有任何浮层了才轮到它（3.3）
+        if (zenModeRef.current) {
+          event.preventDefault();
+          setZen(false);
+          focusReading();
+        }
+        return;
+      }
+
+      // F11 = 禅模式（3.3）。WebView2 自带的 F11 全屏在批次 1.2 已经关掉，这里不会打架
+      if (event.key === "F11") {
+        event.preventDefault();
+        toggleZen();
         return;
       }
 
@@ -2424,6 +2899,13 @@ export default function App() {
         useSettingsStore.getState().resetZoom();
         return;
       }
+      // Ctrl+Shift+F：左栏过滤框聚焦（DG 6.5 / FR-03）。
+      // 与 Ctrl+F（文档内查找，3.1）是两件事，判 shiftKey 区分，绝不互相挪用
+      if (key === "f" && event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        focusRecentFilter();
+        return;
+      }
       if (key === "o" && event.altKey) {
         event.preventDefault();
         toggleOutline();
@@ -2444,7 +2926,16 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [closeAbout, focusReading, openFile, toggleOutline, toggleSidebar]);
+  }, [
+    closeAbout,
+    focusReading,
+    focusRecentFilter,
+    openFile,
+    setZen,
+    toggleOutline,
+    toggleSidebar,
+    toggleZen,
+  ]);
 
   /* ── 阅读区事件委托：链接点击（1.1）与 Ctrl+滚轮缩放（1.4） ── */
 
@@ -2502,9 +2993,17 @@ export default function App() {
       const session = useFileSessionStore.getState();
       const settings = useSettingsStore.getState();
 
-      // 动作在这里现场绑定：选区文本必须是**右键那一刻**的快照，
-      // 菜单打开期间焦点会移进菜单，晚一步去读选区就可能已经变了
-      const actions: ContextMenuActions = {
+      /**
+       * 动作在这里现场绑定：选区文本必须是**右键那一刻**的快照，
+       * 菜单打开期间焦点会移进菜单，晚一步去读选区就可能已经变了。
+       *
+       * 交叉类型里的 toggleZen 是 3.3 的过渡措施：菜单条目层
+       * （components/contextMenuItems.ts，本批次不归本文件改）要把「禅模式」从置灰
+       * 点亮成 `run: actions.toggleZen`，而 ContextMenuActions 接口就在那个文件里。
+       * 先用交叉类型把字段带上，接口补完后这里的交叉自然退化成冗余，无需再改一次。
+       */
+      const actions: ContextMenuActions & { readonly toggleZen: () => void } = {
+        toggleZen,
         copyText: (text) => {
           void writeClipboard(text);
         },
@@ -2541,11 +3040,12 @@ export default function App() {
         openRecent: (filePath) => {
           openPath(filePath);
         },
+        // 走 App 的包装而非直接打 store：两者都要顺手把条目拉回视野（3.4）
         toggleRecentPinned: (filePath) => {
-          useRecentFilesStore.getState().togglePin(filePath);
+          toggleRecentPinned(filePath);
         },
         removeRecent: (filePath) => {
-          useRecentFilesStore.getState().remove(filePath);
+          removeRecentEntry(filePath);
         },
         showAbout,
       };
@@ -2617,7 +3117,15 @@ export default function App() {
     return () => {
       window.removeEventListener("contextmenu", onContextMenu);
     };
-  }, [focusReading, openDocumentAt, openPath, showAbout]);
+  }, [
+    focusReading,
+    openDocumentAt,
+    openPath,
+    removeRecentEntry,
+    showAbout,
+    toggleRecentPinned,
+    toggleZen,
+  ]);
 
   /* ── 渲染管线：revision 变化（含同路径重载）即重渲染 ── */
 
@@ -2805,6 +3313,25 @@ export default function App() {
     [recentItems, recentFilter],
   );
 
+  /**
+   * 可见条目摊平成一条路径序列：分组顺序即视觉顺序，折叠起来的组整组不算。
+   * 键盘导航（↑↓ 跨分组连续移动）与 reveal 的行号都以它为准，
+   * 它与 DOM 里 [data-recent-path] 的出现顺序是同一次渲染的产物，故可按下标互查。
+   */
+  const flatRecentPaths = useMemo(
+    () =>
+      groups.flatMap((group) =>
+        collapsedGroups.includes(group.id)
+          ? []
+          : group.entries.map((entry) => entry.file.path),
+      ),
+    [groups, collapsedGroups],
+  );
+
+  useEffect(() => {
+    flatRecentPathsRef.current = flatRecentPaths;
+  }, [flatRecentPaths]);
+
   // 读取完成前先用文件名顶着，避免顶栏闪一下「未打开文件」
   const displayTitle =
     session.title !== ""
@@ -2816,7 +3343,24 @@ export default function App() {
     encoding === null ? t.status.placeholder : ENCODING_LABEL[encoding];
   const words = session.stats?.charCount ?? 0;
   const lines = session.stats?.lineCount ?? session.lineCount;
-  const outlineOpen = outlineMode !== "hidden";
+  const outlineOpen = outlineMode !== "hidden" && !zenMode;
+
+  /**
+   * 任务栏与 Alt-Tab 的窗口标题（3.3）。
+   * 用 displayTitle 而不是 session.title：读盘期间前者已经是文件名，
+   * 任务栏不该先闪一下"未打开文件"再变成文件名。
+   * 关闭（path=null）与出错一律回落纯应用名——标题栏上挂着一个打不开的文件名很误导。
+   */
+  useEffect(() => {
+    const next =
+      path === null || session.phase === "error"
+        ? t.app.name
+        : t.window.titleWithDocument(displayTitle);
+    void windowSetTitle(next).catch((error: unknown) => {
+      // 权限没配/窗口已销毁时只告警：标题没跟上不值得打断任何事
+      console.warn("[app] setTitle failed", error);
+    });
+  }, [displayTitle, path, session.phase]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-canvas font-ui text-primary">
@@ -2825,6 +3369,7 @@ export default function App() {
         path={path}
         refreshed={refreshed}
         outlineOpen={outlineOpen}
+        zen={zenMode}
         onToggleSidebar={toggleSidebar}
         onToggleOutline={toggleOutline}
         onOpenFile={openFile}
@@ -2839,15 +3384,22 @@ export default function App() {
       )}
 
       <div className="flex min-h-0 flex-1">
-        {sidebarCollapsed ? null : (
+        {/* 禅模式只是"这一会儿不渲染"，settings.sidebarCollapsed 半个字都没动，
+            所以退出时回到的是用户自己那份显隐状态（3.3） */}
+        {sidebarCollapsed || zenMode ? null : (
           <Sidebar
             groups={groups}
             filtering={recentFilter.trim().length > 0}
             filter={recentFilter}
             currentPath={path}
             missingPaths={missingPaths}
+            collapsedGroups={collapsedGroups}
+            flatPaths={flatRecentPaths}
+            reveal={recentReveal}
             onFilterChange={setRecentFilter}
+            onToggleGroup={toggleRecentGroup}
             onOpen={openPath}
+            onTogglePin={toggleRecentPinned}
             onOpenFile={openFile}
           />
         )}
@@ -2907,6 +3459,11 @@ export default function App() {
           onClose={closeAbout}
         />
       ) : null}
+
+      {/* 查找条（UPGRADE_PLAN 3.1）：**必须无条件挂载**——关闭态它自己返回 null，
+          但 Ctrl+F / F3 / Shift+F3 的全局监听靠它活着。条件渲染会让快捷键失效。
+          它自带快捷键注册，App 的 keydown 分支里刻意不再接 Ctrl+F（两处同时接会一次跳两处）。 */}
+      <FindBar scrollerRef={scrollerRef} contentRef={contentRef} />
     </div>
   );
 }

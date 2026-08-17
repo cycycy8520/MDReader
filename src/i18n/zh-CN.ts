@@ -36,10 +36,17 @@ export const zhCN = {
     maximize: "最大化",
     restore: "向下还原",
     close: "关闭",
+    /**
+     * 任务栏与 Alt-Tab 的窗口标题（3.3）：多开几个窗口时只有它能区分谁是谁。
+     * 分隔符用半角连字符而非中文破折号——任务栏悬停条会按半角截断，中文标点在那里会糊。
+     */
+    titleWithDocument: (title: string): string => `${title} - MDNaonao`,
   },
 
   sidebar: {
     searchPlaceholder: "搜索文件",
+    /** 过滤框右侧的清空钮（有值时才出现） */
+    clearFilter: "清空",
     groupPinned: "置顶",
     groupToday: "今天",
     groupYesterday: "昨天",
@@ -51,6 +58,10 @@ export const zhCN = {
     /** 过滤框有内容但无命中（与「一条都没有」区分，避免误导） */
     emptyFiltered: "没有匹配的文件",
     settings: "设置",
+    /** role=listbox 的无障碍名（屏幕阅读器读出"这是一个最近文件列表"） */
+    recentListLabel: "最近打开的文件",
+    /** 条目 hover 浮现的第二个钮：点开即右键菜单那一套（附录 A.2） */
+    moreActions: "更多操作",
   },
 
   outline: {
@@ -59,6 +70,37 @@ export const zhCN = {
     unpin: "取消钉住",
     close: "关闭大纲",
     empty: "此文档没有标题结构",
+  },
+
+  /**
+   * 文档内查找浮条（FR-05 / UPGRADE_PLAN 3.1）。
+   * 顶栏「查找」按钮的名字复用 topbar.find，这里只放浮条自己的文案。
+   */
+  find: {
+    placeholder: "查找",
+    previous: "上一处",
+    next: "下一处",
+    close: "关闭查找",
+    /** 未输入 / 无命中时的计数：两种情况都显示 0/0，位置不留空（否则浮条会抖一下） */
+    countEmpty: "0/0",
+    count: (index: number, total: number): string => `${index}/${total}`,
+    /** 命中数触顶（引擎封顶）：后缀 + 表示"还不止这些" */
+    countTruncated: (index: number, total: number): string => `${index}/${total}+`,
+    /** 大文档首次查找要先建全文索引，期间浮条显示这一行 */
+    indexing: "正在索引…",
+  },
+
+  /**
+   * GitHub alerts 告警块的类型名（UPGRADE_PLAN 4.1）。
+   * 语法 `> [!NOTE]` 等五种，是当下 README 的事实标准；渲染层识别后
+   * 用这些名字做标题行。刻意保留英文原义的中文译法，与 GitHub 中文界面一致。
+   */
+  alert: {
+    note: "注意",
+    tip: "提示",
+    important: "重要",
+    warning: "警告",
+    caution: "当心",
   },
 
   reading: {
@@ -114,6 +156,17 @@ export const zhCN = {
     externalImageFailed: "外链图片加载失败",
     /** 一篇文档里有多张外链图时，占位块上追加的批量入口 */
     loadAllExternalImages: "本篇全部加载",
+
+    /* ── 排版补完（UPGRADE_PLAN 4.2）产出的应用文字 ── */
+
+    /** [TOC] 指令渲染出的文内目录标题 */
+    tocTitle: "目录",
+    /** Mermaid 语法错误：显示错误卡片 + 原始代码回退，不留空白也不显示半成品图 */
+    diagramError: "图表渲染失败",
+    /** KaTeX 公式错误 */
+    formulaError: "公式渲染失败",
+    /** \ce{} 化学式：mhchem 扩展未打包，明确告知而非静默失败 */
+    chemNotBundled: "本版本未内置化学式扩展（mhchem），\\ce{} 语法暂不支持",
   },
 
   status: {
@@ -206,6 +259,39 @@ export const zhCN = {
     openLogDir: "打开日志目录",
     /** 后端 app_info 尚未就绪时的占位（不留空白，也不假装有值） */
     unknown: "—",
+  },
+
+  /**
+   * 栏宽拖拽把手（UPGRADE_PLAN 4.3）。全是无障碍名：把手本身是一条透明命中带，
+   * 屏幕阅读器只能靠 aria-label 知道自己停在哪根分隔条上。
+   */
+  resize: {
+    /** 通用兜底（ResizeHandle 未传 label 时用） */
+    handle: "调整栏宽",
+    sidebar: "调整左栏宽度",
+    outline: "调整大纲栏宽度",
+  },
+
+  /** 图片灯箱（UPGRADE_PLAN 4.3 / DG 6.4-4） */
+  lightbox: {
+    /** role=dialog 的无障碍名 */
+    label: "图片预览",
+    close: "关闭预览",
+  },
+
+  /**
+   * 崩溃兜底卡片（UPGRADE_PLAN 4.3）。
+   * 语气刻意收着：只读查看器渲染失败不动用户一个字节，不该用事故级措辞吓人。
+   */
+  errorBoundary: {
+    title: "界面没能画出来",
+    hint: "文件本身没有被改动。重新加载通常就能恢复；如果反复出现，请复制诊断信息反馈。",
+    /** error.message 为空时的占位 */
+    unknownError: "未知错误",
+    reload: "重新加载",
+    copy: "复制诊断信息",
+    /** 日志目录一行的前缀标签（值由后端 app_info 回传） */
+    logDir: "日志目录",
   },
 
   common: {

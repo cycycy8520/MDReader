@@ -323,6 +323,101 @@
   }
 }
 
+/* ══════════════════════════════════════════════════════════════
+   栏宽拖拽（UPGRADE_PLAN 4.3 / components/ResizeHandle.tsx）
+
+   拖拽开始时组件在 <html> 上挂 `data-md-resizing`，松手/取消时摘掉。
+   这里做三件全局的事，都是「跟手」的必要条件：
+
+     cursor      指针从 8px 命中带滑出去（拖到阅读区中央很正常）时不能变回箭头，
+                 否则用户会以为拖拽已经断了而松手；
+     user-select 拖拽横穿正文时会触发原生拖选，松手后一大片正文是选中的；
+     transition  这是最要命的一条 —— 任何一条 width / transform 过渡都会让列宽
+                 「追」着指针走，200ms 的追赶在拖拽里表现为整列抖动/滞后。
+
+   为什么用 `*` 全局掐而不是只掐两列：过渡可能挂在列内部的任意子元素上
+   （渐隐遮罩、图标旋转、行高亮），拖拽期间它们同样会抖。反正只在按住的这几百毫秒生效。
+   特异性高于文件末尾的 prefers-reduced-motion 块，两者都是 !important 时本条胜出，
+   语义也一致（都是「此刻不要动画」）。
+   ══════════════════════════════════════════════════════════════ */
+
+:root[data-md-resizing],
+:root[data-md-resizing] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+  transition: none !important;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   文档内查找的命中高亮（UPGRADE_PLAN 3.1）
+
+   用 CSS Custom Highlight API：JS 侧把 Range 注册进 `CSS.highlights`，
+   命名为 md-find（全部命中）与 md-find-active（当前那一处）。
+   它不改 DOM —— 这正是选它而不是包 <mark> 的原因：包标签会打断 KaTeX / Mermaid
+   的子树，也会让「复制正文」粘出多余的换行。
+
+   伪元素只认少数几个属性（color / background-color / text-decoration /
+   text-shadow / -webkit-text-stroke），所以这里只有两条声明，别加圆角或内边距——
+   写了不会报错，只会静默无效。
+
+   配色：普通命中用 accent-soft 底 + 正文色（与 ::selection 同一枚底色，
+   视觉上「查找命中」和「手动选中」本就该是一家）；当前命中用实心 accent 底 + 反色文字，
+   在满屏浅蓝里一眼认出「我现在在这一处」。两个主题的取值都由 Token 层负责，此处不分叉。
+   ══════════════════════════════════════════════════════════════ */
+
+::highlight(md-find) {
+  background-color: var(--md-accent-soft);
+  color: var(--md-text-primary);
+}
+
+::highlight(md-find-active) {
+  background-color: var(--md-accent);
+  color: var(--md-text-inverted);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   窄窗自适应（UPGRADE_PLAN 4.3）
+
+   断点 **1024px**（与 App 层自动折叠左栏的 matchMedia 判据必须同值：
+   `window.matchMedia("(max-width: 1023.98px)")`；用 .98 是为了避开
+   缩放比下 1023.5px 这类小数宽度两边都不命中的缝）。
+
+   分工：**折叠与否是状态，归 App**（还要记住用户的手动意图，不能被窗口大小反复覆写）；
+   本文件只提供纯样式的两把工具，不参与决策。
+   ══════════════════════════════════════════════════════════════ */
+
+@media (max-width: 1023.98px) {
+  /* 窄窗下让位的次要 chrome（如状态栏的冗余分段） */
+  .narrow-hide {
+    display: none !important;
+  }
+
+  /* 可让步的侧栏：窄窗时不再吃满自己的固定宽度，保证阅读区永远是主角。
+     opt-in（要哪一列生效就给哪一列加类），不硬套到所有 aside 上。 */
+  .narrow-shrink {
+    max-width: 40vw;
+  }
+}
+
+/* 与上一条互补：只在窄窗出现的元素（如折叠后的浮出入口） */
+@media (min-width: 1024px) {
+  .narrow-only {
+    display: none !important;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   阅读区图片：可点开灯箱的提示（UPGRADE_PLAN 4.3 / DG 6.4-4）
+
+   `data-preview-image` 由渲染管线（render/preview.ts）打在改写过的本地图上，
+   也是 App 做灯箱事件委托的选择器。这里只负责让指针形状说出"这张能点开"——
+   没有 hover 位移、没有阴影抬升（交互铁律 2）。
+   ══════════════════════════════════════════════════════════════ */
+
+[data-reading-root] img[data-preview-image] {
+  cursor: zoom-in;
+}
+
 /* ── 降级动效 ─────────────────────────────────────────────────
    系统开启「减少动态效果」时把所有动画/过渡时长归零。
    用 0.01ms 而非 0s：时长为 0 的过渡不会触发 transitionend，
