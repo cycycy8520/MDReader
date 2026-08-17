@@ -102,52 +102,52 @@
 
 > 目标出口一句话：**改文件、切主题、重开文件，视线永不丢失位置。**
 
-### 2.1 外部保存刷新零白闪 ⬜（major，1–2 天）
-- [ ] 静默刷新改离屏容器渲染：settled 后一次性 `replaceChildren` + 同帧恢复 scrollTop（当前是先清空 DOM、跳顶、最长 8s 后才弹回）
-- [ ] silent 刷新不显示 LoadingLine；● 指示点闪烁保留
+### 2.1 外部保存刷新零白闪 ✅ 2026-08-18（major，1–2 天）
+- [x] 静默刷新改离屏容器渲染：settled 后一次性 `replaceChildren` + 同帧恢复 scrollTop（当前是先清空 DOM、跳顶、最长 8s 后才弹回）
+- [x] silent 刷新不显示 LoadingLine；● 指示点闪烁保留
 - 验收：VS Code 里连续保存 5 次，阅读区无白闪、位置纹丝不动（与 MPE 并排对比）
 
 ### 2.2 滚动位置记忆接线（FR-16）⬜（major，1 天）
-- [ ] scroll 节流 500ms 写"视口首个标题 id + 像素偏移"→ `updateScrollAnchor`（后端命令已备）
-- [ ] openPath 渲染 settled 后恢复（id 优先、失效退偏移；主动新开的文档无锚点则顶部）
+- [x] scroll 节流 500ms 写"视口首个标题 id + 像素偏移"→ `updateScrollAnchor`（后端命令已备）
+- [x] openPath 渲染 settled 后恢复（id 优先、失效退偏移；主动新开的文档无锚点则顶部）
 - 验收：重开 big-10mb.md 回到上次位置 ±1 屏
 
-### 2.3 主题切换 / F5 保位 ⬜（major，小时级）
-- [ ] keepTop 条件改为"path 未变即保留"——只有主动换文档才归顶
+### 2.3 主题切换 / F5 保位 ✅ 2026-08-18（major，小时级）
+- [x] keepTop 条件改为"path 未变即保留"——只有主动换文档才归顶
 - 验收：文中部切主题/按 F5，位置不动
 
-### 2.4 表格宽度修复 ⬜（major，半天）
-- [ ] 长句单元格恢复换行（width:max-content 策略修正 + 单元格宽度约束生效），只有真超宽表才滚动
-- [ ] 所有 table（含嵌套在列表/引用内的）统一 `.md-table-wrap` 包裹，删 `> table` 特判
+### 2.4 表格宽度修复 ✅ 2026-08-18（major，半天）
+- [x] 长句单元格恢复换行（width:max-content 策略修正 + 单元格宽度约束生效），只有真超宽表才滚动
+- [x] 所有 table（含嵌套在列表/引用内的）统一 `.md-table-wrap` 包裹，删 `> table` 特判
 - 验收：用户真实文档的"进表的东西"那张表正常换行；嵌套宽表只在壳内滚动，阅读区无横向滚动条
 
-### 2.5 frontmatter 属性卡片 ⬜（major，半天）
-- [ ] 按 `frontmatterDisplay` 渲染 dl 卡片（样式现成）；raw 模式退化为代码块；hidden 隐藏
+### 2.5 frontmatter 属性卡片 ✅ 2026-08-18（major，半天）
+- [x] 按 `frontmatterDisplay` 渲染 dl 卡片（样式现成）；raw 模式退化为代码块；hidden 隐藏
 - 验收：含 YAML 头的文档不再"信息蒸发"
 
-### 2.6 图片链路补完 ⬜（major，小时级 ×2）
-- [ ] `read_markdown` 成功后运行时授权文档所在目录（`allow_asset_dir`）——D 盘/UNC 的配图不再裂
-- [ ] CSP `img-src` 追加 https:/http:（仅图片，脚本不动）——外链图"点击加载"真的能加载；占位块补失败态
-- [ ] 占位区补"本篇全部加载"入口
+### 2.6 图片链路补完 ✅ 2026-08-18（major，小时级 ×2）
+- [x] `read_markdown` 成功后运行时授权文档所在目录（`allow_asset_dir`）——D 盘/UNC 的配图不再裂
+- [x] CSP `img-src` 追加 https:/http:（仅图片，脚本不动）——外链图"点击加载"真的能加载；占位块补失败态
+- [x] 占位区补"本篇全部加载"入口
 - 验收：D 盘文档配图正常；外链图点击可载、失败有文案
 
 ### 2.0 便携版（F19）⬜（用户 2026-08-18 指定纳入，半天）
 > 范围变更：DEV_GUIDE 2.2 原列"V1 不做"，经用户决定纳入。安装版与便携版**共用同一份 exe**，靠标记文件切换数据根目录，不做两套构建。
-- [ ] `settings::app_data_dir()` 加便携探测：exe 同级存在 `portable.marker` → 返回 `<exe目录>\data\`；否则维持 `%APPDATA%\MDNaonao\`（探测结果进程内缓存一次，避免每次 IO）
-- [ ] 便携模式下：不注册文件关联、不写任何注册表（shell_integ 的写入路径直接短路并 warn）、日志同样落 `data\logs\`
-- [ ] 启动日志打印当前模式与数据根目录（便于排查"我的设置去哪了"）
-- [ ] 目录不可写时（如放在 Program Files 或只读 U 盘）给明确错误提示，不静默失败
-- [ ] `scripts/package.mjs`：一条命令产出**安装包 + 便携 zip** 两个产物（脚本已就位，待接便携模式后启用 marker）
+- [x] `settings::app_data_dir()` 加便携探测：exe 同级存在 `portable.marker` → 返回 `<exe目录>\data\`；否则维持 `%APPDATA%\MDNaonao\`（探测结果进程内缓存一次，避免每次 IO）
+- [x] 便携模式下：不注册文件关联、不写任何注册表（shell_integ 的写入路径直接短路并 warn）、日志同样落 `data\logs\`
+- [x] 启动日志打印当前模式与数据根目录（便于排查"我的设置去哪了"）
+- [x] 目录不可写时（如放在 Program Files 或只读 U 盘）给明确错误提示，不静默失败
+- [x] `scripts/package.mjs`：一条命令产出**安装包 + 便携 zip** 两个产物（脚本已就位，待接便携模式后启用 marker）
 - 验收：解压 zip 到任意目录直跑 → 改设置 → 关闭重开设置仍在 → `%APPDATA%\MDNaonao` **不被创建**；同机安装版与便携版数据互不干扰
 
-### 2.7 窗口几何记忆 ⬜（major，半天）
-- [ ] CloseRequested 时存 size/position/maximized；setup 恢复 + 屏幕边界校验（显示器拔掉回落主屏居中）
+### 2.7 窗口几何记忆 ✅ 2026-08-18（major，半天）
+- [x] CloseRequested 时存 size/position/maximized；setup 恢复 + 屏幕边界校验（显示器拔掉回落主屏居中）
 - 验收：调窗→关→开，原样还原
 
-### 2.8 及时回填与降级反馈 ⬜（minor，半天）
-- [ ] 大纲/字数在 DOM 落地后立即回填，不再被 Mermaid settle 绑架（超时文档大纲 8s 才出现 → 即时）
-- [ ] isLarge 文档顶部细提示条（规格 DG 6.6 现成）；loading 期旧文 `opacity-40 + pointer-events-none`
-- [ ] >50MB 拒开并给明确文案
+### 2.8 及时回填与降级反馈 ✅ 2026-08-18（minor，半天）
+- [x] 大纲/字数在 DOM 落地后立即回填，不再被 Mermaid settle 绑架（超时文档大纲 8s 才出现 → 即时）
+- [x] isLarge 文档顶部细提示条（规格 DG 6.6 现成）；loading 期旧文 `opacity-40 + pointer-events-none`
+- [x] >50MB 拒开并给明确文案
 
 ---
 
@@ -213,7 +213,7 @@
 | 批次 | 状态 | 开始 | 自验通过 | 用户验收 |
 |---|---|---|---|---|
 | 批次 1 驯服 WebView、接通断线 | ✅ 自验通过 | 2026-08-18 | 2026-08-18 | 待用户验收 |
-| 批次 2 阅读的连续性 | ⬜ | — | — | — |
+| 批次 2 阅读的连续性 | ✅ 自验通过 | 2026-08-18 | 2026-08-18 | 随全部完成后一并交付 |
 | 批次 3 查找 + 右键菜单 | ⬜ | — | — | — |
 | 批次 4 排版补完与打磨 | ⬜ | — | — | — |
 

@@ -2681,11 +2681,19 @@ export default function App() {
           scroller.scrollTop = carriedTop;
           return;
         }
+        // 链接带 #fragment 时用户要的是"去那一节"，不是"回上次的位置"：
+        // 这里先归顶，紧接着的 jumpToAnchor（在 .then 里，无中间帧）负责跳过去
+        const pending = pendingAnchor.current;
+        if (pending !== null && samePath(pending.path, path)) {
+          scroller.scrollTop = 0;
+          return;
+        }
         /**
          * 2.2：恢复锚点**到这一刻才查**。
          * 冷启动时 recentFiles.load() 与 openPath 是并发的，在 effect 开头查很可能
-         * 查到空表（双击 .md 启动必然如此）；而本篇自己的滚动写入要等 renderedPathRef
-         * 指向它之后才会发生（就在下一行之前刚设好），所以这里读到的一定是上次的值。
+         * 查到空表（双击 .md 启动必然如此）；而本篇自己的滚动写入只发生在
+         * renderedPathRef 指向它之后（本函数开头才刚指过来），所以这里读到的
+         * 一定还是上一次会话留下的值。
          */
         const restoreAnchor = findScrollAnchor(path);
         if (restoreAnchor !== null) {

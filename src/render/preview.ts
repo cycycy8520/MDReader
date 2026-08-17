@@ -1264,11 +1264,29 @@ export async function renderMarkdown(options: RenderOptions): Promise<RenderResu
   let outline: OutlineNode[] = [];
   let charCount = 0;
 
+  /** 本次渲染作废：收走舞台，回一个 committed:false 的空壳交调用方丢弃 */
+  const abandoned = (): RenderResult => {
+    stage.dispose();
+    return {
+      outline,
+      frontmatter,
+      stats: buildStats(charCount),
+      committed: false,
+      dispose,
+    };
+  };
+
   try {
     ensureOptionalAssetStubs();
 
     // 1) Markdown → HTML（lute 内部已按 sanitize:true 过滤一遍，这是第一层）
     const html = await Vditor.md2html(body, buildPreviewOptions(theme));
+
+    // md2html 期间可能已经切走文档：在这里早退，既省掉整条管线，
+    // 也避免下面的「大纲/字数即时回填」把新文档刚填好的值冲掉。
+    if (cancelled()) {
+      return abandoned();
+    }
 
     // 2) 第二层：先净化字符串再写入，绝不把未净化的 HTML 挂到已连接的节点上
     host.innerHTML = purifyHtml(html);
@@ -1309,14 +1327,7 @@ export async function renderMarkdown(options: RenderOptions): Promise<RenderResu
     // 6) 等待期间用户可能已经开了别的文件——整批丢弃，绝不覆盖新文档。
     //    这一步放在过滤与增强之前：作废的 DOM 不会进入任何容器，也就没有再加工的意义。
     if (cancelled()) {
-      stage.dispose();
-      return {
-        outline,
-        frontmatter,
-        stats: buildStats(charCount),
-        committed: false,
-        dispose,
-      };
+      return abandoned();
     }
 
     purifyDiagrams(host);
