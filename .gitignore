@@ -37,3 +37,6 @@ tmp/
 .env
 .env.*
 !.env.example
+
+# 交付产物（pnpm package 产出，不入库）
+/release/

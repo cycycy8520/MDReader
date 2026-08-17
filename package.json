@@ -18,7 +18,8 @@
     "test": "vitest run --passWithNoTests",
     "tauri": "tauri",
     "check:no-cdn": "node scripts/check-no-cdn.mjs",
-    "gen:corpus": "node scripts/gen-corpus.mjs"
+    "gen:corpus": "node scripts/gen-corpus.mjs",
+    "package": "node scripts/package.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.3",

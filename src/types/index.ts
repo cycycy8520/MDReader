@@ -136,18 +136,78 @@ export interface DefaultAppStatus {
 
 /* ── 设置（DG 7.3 settings.json） ───────────────────────────── */
 
+/**
+ * 窗口几何（DG 6.2「窗口记忆」），对应 Rust `settings::WindowGeometry`。
+ * x/y 为 null = 尚无记录（首启）或坐标越界被判废，由 Rust 侧回落主屏居中。
+ */
+export interface WindowGeometry {
+  x: number | null;
+  y: number | null;
+  width: number;
+  height: number;
+  maximized: boolean;
+}
+
+/**
+ * 用户设置（= settings.json 全表）。
+ *
+ * 【契约】本接口与 Rust `settings::Settings` **逐字段对应**，wire 格式一律 camelCase
+ * （Rust 侧 `#[serde(rename_all = "camelCase")]`，故 snake_case 的 font_size 序列化为 fontSize）。
+ * 字段增删改必须两侧同步，否则 serde 的「忽略未知字段 + 缺省补默认」会让保存静默丢失，
+ * 甚至把未发送的字段反向覆写成默认值（审计 2026-08-18 blocker）。
+ * 键集合由 [`SETTINGS_KEYS`] 锁死，对拍单测见 `src/stores/settings.test.ts`。
+ */
 export interface Settings {
   theme: Theme;
-  /** 正文字号档位 14–20px（DG 6.7） */
-  readingFontSize: number;
-  /** 缩放 90–150（DG 5.2 状态栏） */
-  zoom: number;
+  /** 正文字号档位 14–20px（DG 6.7；Rust: font_size） */
+  fontSize: number;
+  /** 缩放百分比 90–150（DG 5.2 状态栏；Rust: zoom_percent） */
+  zoomPercent: number;
   /** 代码折行；关闭时代码块横向滚动（DG 5.4） */
   codeWrap: boolean;
+  /** frontmatter 三态显示（FR-14：卡片 / 隐藏 / 原样代码块） */
   frontmatterDisplay: FrontmatterDisplay;
   /** 大纲钉住态持久化（DG 5.2） */
   outlinePinned: boolean;
-  exportHtmlMode: ExportHtmlMode;
+  /** 左栏宽度 264–420（DG 5.2） */
+  sidebarWidth: number;
+  /** 左栏折叠态（Ctrl+B） */
+  sidebarCollapsed: boolean;
+  /** 导出 HTML 模式（Rust: html_export_mode） */
+  htmlExportMode: ExportHtmlMode;
+  window: WindowGeometry;
+}
+
+/**
+ * Settings 的键全集（运行期可枚举，供契约单测与迁移逻辑使用）。
+ * 用 `Record<keyof Settings, true>` 声明：漏写字段编译报错，多写字段同样报错——
+ * 接口一旦增删字段，这里会立刻红，不会出现「类型改了、迁移忘了」。
+ */
+const SETTINGS_KEY_MAP: Record<keyof Settings, true> = {
+  theme: true,
+  fontSize: true,
+  zoomPercent: true,
+  codeWrap: true,
+  frontmatterDisplay: true,
+  outlinePinned: true,
+  sidebarWidth: true,
+  sidebarCollapsed: true,
+  htmlExportMode: true,
+  window: true,
+};
+
+export const SETTINGS_KEYS = Object.keys(SETTINGS_KEY_MAP) as (keyof Settings)[];
+
+/**
+ * 阅读区排版变量（1.4）：`.md-content` 的字号体系是
+ * `calc(var(--md-reading-font) * var(--md-zoom))`，两个变量由 settings store
+ * 计算后注入阅读容器 style（见 `stores/settings.ts` 的 `readingStyleVars`）。
+ */
+export interface ReadingStyleVars {
+  /** 带单位的正文基准字号，如 "16px" */
+  "--md-reading-font": string;
+  /** 无单位的缩放系数，如 "1.25" */
+  "--md-zoom": string;
 }
 
 /* ── 状态反馈（DG 6.6） ─────────────────────────────────────── */
