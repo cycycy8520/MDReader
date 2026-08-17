@@ -113,7 +113,8 @@ mdviewer/
 └── .github/workflows/ci.yml   # DG 11.3
 ```
 
-- 建仓位置默认 `E:\MDyuedu\mdviewer\`，人类未另行指定时直接用默认值开工、无需询问（事后要求迁移再迁）。建仓时把 DEV_GUIDE.md / AI_DEV_GUIDE.md / CLAUDE.md **移动**（非复制）入仓库根目录，原目录只留一个指向新仓库路径的一行说明文件——唯一事实来源不允许存在两份副本。
+- **仓库已建立**（2026-08-17）：位置就是 `E:\MDyuedu` 本身（不是子目录），远程 `origin` = https://github.com/cycycy8520/MDReader ，默认分支 `main`。三份文档即位于仓库根，无需搬动，也不存在副本分裂问题。
+- 推送凭据经 Windows 凭据管理器已可用，`git push` 直接可用；`gh` CLI 未登录，需要 issue/PR 操作时由人类先 `gh auth login`。
 - `tauri.conf.json` 首版三要素：`bundle.fileAssociations`（五个扩展名，DG 8）、`webviewInstallMode: downloadBootstrapper`、严格 CSP（首版策略串：`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; connect-src 'self'`，后续放行必须先改这里并在 DG 留痕）。single-instance 的"最先注册"落实在 `main.rs` 的 Builder 链，不是 conf 配置项。
 
 ---
