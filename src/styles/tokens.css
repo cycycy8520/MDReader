@@ -1,0 +1,127 @@
+/**
+ * Design Tokens —— DG 5.5（色板）/ 5.6（字体栈）/ 5.7（圆角阴影间距）/ 5.2（区域尺寸）/ 6.3（动效）
+ *
+ * 本文件是全部 Token 的唯一定义处（AI_DEV_GUIDE 第 4 节仓库结构）。
+ * 规则：
+ *   1. 组件只引用 Token，禁止裸色值（红线 14）；新增色 Token 必须先写进 DG 5.5。
+ *   2. 深色为设计基准 → 定义在 :root；浅色通过 [data-theme="light"] 覆盖。
+ *   3. 用户未显式选择主题时（<html> 上无 data-theme），由 prefers-color-scheme 兜底跟随系统。
+ */
+
+:root {
+  /* ── 色板：深色（DG 5.5 设计基准稿） ───────────────────────────── */
+  --color-bg-canvas: #0e1116; /* 主背景 */
+  --color-bg-panel: #151a22; /* 左侧栏 / 顶栏 / 状态栏 */
+  --color-bg-card: #1c232e; /* 卡片、悬浮层 */
+  --color-bg-code: #0a0d12; /* 代码块 */
+  --color-border: #2a3341; /* 分割线 / 描边 */
+  --color-text-primary: #e6edf3; /* 正文 */
+  --color-text-secondary: #8b98a5; /* 次要文字 */
+  --color-brand: #4c8df6; /* 品牌色 */
+  --color-brand-soft: #4c8df61a; /* 选中背景 */
+  --color-success: #3fb950;
+  --color-warn: #d29922;
+  --color-danger: #f85149;
+
+  /* 阴影（DG 5.7）：卡片 / 弹窗浮层 */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.25);
+  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.35);
+
+  /* ── 字体栈（DG 5.6） ─────────────────────────────────────────── */
+  --font-ui: -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --font-body: system-ui, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+
+  /* ── 圆角三档（DG 5.7） ───────────────────────────────────────── */
+  --radius-sm: 4px; /* 小控件 */
+  --radius-md: 8px; /* 卡片、输入框、代码块 */
+  --radius-lg: 12px; /* 弹窗、菜单面板 */
+
+  /* ── 间距：4px 栅格（DG 5.7），常用 8/12/16/24 ────────────────── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+
+  /* ── 区域尺寸（DG 5.2 区域规格） ──────────────────────────────── */
+  --size-topbar: 44px; /* 顶栏 */
+  --size-statusbar: 26px; /* 状态栏 */
+  --size-sidebar: 260px; /* 左侧栏默认宽 */
+  --size-sidebar-min: 200px; /* 左侧栏可拖拽下限 */
+  --size-sidebar-max: 360px; /* 左侧栏可拖拽上限 */
+  --size-outline: 240px; /* 大纲面板 */
+  --size-reading: 760px; /* 阅读区内容列宽 */
+  --size-find: 360px; /* 查找浮条 */
+
+  /* ── 阅读排版（DG 5.4） ───────────────────────────────────────── */
+  --reading-font-size: 16px;
+  --reading-line-height: 1.75;
+  --reading-paragraph-gap: 1.2em;
+
+  /* ── 动效（DG 6.3 动效规格表；军规见 DG 6.1） ─────────────────── */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --duration-hover: 100ms; /* 按钮/条目 hover */
+  --duration-press: 80ms; /* 按下 */
+  --duration-panel: 200ms; /* 左栏折叠、大纲钉住列宽 */
+  --duration-overlay-in: 180ms; /* 浮层出 */
+  --duration-overlay-out: 140ms; /* 浮层入（出慢入快） */
+  --duration-theme: 150ms; /* 手动切主题时的全局色过渡 */
+
+  /* 滚动条（DG 6.4-10） */
+  --scrollbar-size: 8px;
+  --scrollbar-size-hover: 10px;
+}
+
+/* ── 浅色主题（DG 5.5 浅色段） ──────────────────────────────────── */
+[data-theme="light"] {
+  --color-bg-canvas: #ffffff;
+  --color-bg-panel: #f6f8fa;
+  --color-bg-card: #ffffff; /* DG 未单列：浅色下卡片用白底 + 描边区分层次 */
+  --color-bg-code: #f6f8fa;
+  --color-border: #d0d7de;
+  --color-text-primary: #1f2328;
+  --color-text-secondary: #59636e;
+  --color-brand: #1f6feb;
+  --color-brand-soft: #1f6feb1a;
+  --color-success: #1a7f37; /* GitHub Light 同款，保证 AA 对比度（DG 6.7） */
+  --color-warn: #9a6700;
+  --color-danger: #cf222e;
+
+  /* 浅色主题阴影透明度减半（DG 5.7） */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.12);
+  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+/* ── 兜底：未显式指定 data-theme 时跟随系统（首启行为，DG 5.5/F9） ── */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --color-bg-canvas: #ffffff;
+    --color-bg-panel: #f6f8fa;
+    --color-bg-card: #ffffff;
+    --color-bg-code: #f6f8fa;
+    --color-border: #d0d7de;
+    --color-text-primary: #1f2328;
+    --color-text-secondary: #59636e;
+    --color-brand: #1f6feb;
+    --color-brand-soft: #1f6feb1a;
+    --color-success: #1a7f37;
+    --color-warn: #9a6700;
+    --color-danger: #cf222e;
+
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.12);
+    --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.18);
+  }
+}
+
+/* ── 无障碍：系统开启「减少动态效果」时所有动效时长归零（DG 6.1 军规 3 / 6.7） ── */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-hover: 0ms;
+    --duration-press: 0ms;
+    --duration-panel: 0ms;
+    --duration-overlay-in: 0ms;
+    --duration-overlay-out: 0ms;
+    --duration-theme: 0ms;
+  }
+}

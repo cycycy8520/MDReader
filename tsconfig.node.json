@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "strict": true,
+    /* 构建期脚本运行在 Node 20，需要 Node 全局类型 */
+    "types": ["node"]
+  },
+  "include": ["vite.config.ts"]
+}

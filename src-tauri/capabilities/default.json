@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "MD Viewer 主窗口最小权限集：核心默认 + cli + clipboard-manager 写入。新增权限必须写明用途并同步 DG。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+
+    "cli:default",
+
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-write-html",
+    "clipboard-manager:allow-write-image"
+  ]
+}

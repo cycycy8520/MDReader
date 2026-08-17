@@ -1,0 +1,51 @@
+# EditorConfig —— 跨编辑器的基础格式约定
+# 依据：AI_DEV_GUIDE 第 5 节「编码规范」；与 Prettier / rustfmt 的默认值保持不冲突
+# 说明：本文件只管"字节层面"的格式（缩进/换行/编码），代码风格仍以 ESLint + rustfmt 为准
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = 120
+
+[*.rs]
+indent_size = 4
+
+[*.{json,jsonc}]
+indent_size = 2
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.toml]
+indent_size = 2
+
+# Markdown：行尾两个空格是"软换行"语法，不能被裁掉
+[*.md]
+trim_trailing_whitespace = false
+
+# Windows 原生脚本必须是 CRLF，否则批处理执行会出怪问题
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+
+# 测试语料库是"被测数据"，一律保持原样：
+# - gbk.md 是 GBK 编码（DG 12.0），编辑器绝不能自动转成 UTF-8
+# - longlines.md / big-10mb.md 的行尾空白与结尾换行本身就是被测特征
+[test-corpus/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = false
+trim_trailing_whitespace = false
+max_line_length = off
+
+# 自托管渲染资源由 scripts/fetch-vditor.mjs 生成，不参与格式化
+[vendor/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = false
+trim_trailing_whitespace = false
+max_line_length = off

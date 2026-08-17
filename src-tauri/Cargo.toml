@@ -1,0 +1,62 @@
+[package]
+name = "md-viewer"
+version = "0.1.0"
+description = "MD Viewer —— Windows 轻量 Markdown 查看器（严格只读）"
+authors = ["MD Viewer Contributors"]
+edition = "2021"
+rust-version = "1.77"
+default-run = "md-viewer"
+
+# 二进制入口为 src/main.rs（Builder 链所在处）；业务模块统一放在 lib 中，
+# 便于单元测试与未来复用。Windows 专用项目，crate-type 只需 rlib。
+[lib]
+name = "md_viewer_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# —— 桌面壳与官方插件（DG 4.1「官方现成能力优先」）——
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-cli = "2"
+tauri-plugin-clipboard-manager = "2"
+
+# —— 序列化 ——
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# —— 错误与日志（AI_DEV_GUIDE 第 5 节 Rust 规范）——
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# —— 命令行（--action 解析，cli 插件与单实例回调共用，DG 7.4）——
+clap = { version = "4", features = ["derive"] }
+
+# —— 系统集成 ——
+# notify：当前文件监听（DG 7.2-3 防抖 300ms 重渲染）
+notify = "6"
+# winreg：**仅**用于额外右键动词与「当前默认程序是谁」只读检测。
+# 红线 2/3：永不写 UserChoice，永不整删 .md 扩展名键；文件关联本身交给 bundler。
+winreg = "0.52"
+# reqwest：飞书 medias/upload_all + import_tasks 两个接口（DG 4.1 飞书 SDK 行）
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+
+# —— 待 M0-① 锁定的 COM 依赖（红线 10）——
+# PrintToPdf / CDP 需要 `webview2-com` 与 `windows`，其版本必须与 Tauri 内部 wry
+# 锁定的版本**精确一致**（`cargo tree -i webview2-com` / `cargo tree -i windows` 核对后写死），
+# 永不单独升级。M0-① 核对完成后取消下面两行注释并填入精确版本：
+# [target.'cfg(windows)'.dependencies]
+# webview2-com = "=<跟随 wry>"
+# windows = { version = "=<跟随 wry>", features = ["Win32_Foundation", "Win32_System_Com"] }
+
+[profile.release]
+# 25MB 安装包预算（DG 3.2）：体积优先
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+incremental = false

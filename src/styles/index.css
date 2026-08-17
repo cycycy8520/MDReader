@@ -1,0 +1,106 @@
+/**
+ * 全局样式入口：Token 定义 + Tailwind 指令 + 基础重置 + 滚动条。
+ * 阅读区排版（DG 5.4）不在此实现——它属于渲染管线的样式层（M0-② / M1）。
+ */
+
+@import "./tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-bg-canvas);
+    color: var(--color-text-primary);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* 桌面应用外壳观感：外壳区域不可选中；阅读区单独放开（见下） */
+    user-select: none;
+    /* 禁用整页橡皮筋/双指后退，阅读区滚动由自身容器接管 */
+    overscroll-behavior: none;
+  }
+
+  /* 阅读区内容必须可选中、可复制（FR-19） */
+  [data-reading-root],
+  [data-reading-root] * {
+    user-select: text;
+  }
+
+  /* 严格只读：整窗禁用原生拖放默认行为，拖入 .md 的处理由应用接管（FR-13） */
+  img {
+    -webkit-user-drag: none;
+  }
+
+  /* 焦点可见性（DG 6.5 焦点管理 / 6.7）：仅键盘触发时显示 2px 品牌描边 */
+  :focus {
+    outline: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  ::selection {
+    background-color: var(--color-brand-soft);
+  }
+
+  /* 表单元件继承 Token 字体，避免 WebView2 默认字体串味 */
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+}
+
+@layer utilities {
+  /* 单行截断（左栏文件名等），配合 title 属性给完整文本 */
+  .truncate-line {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+}
+
+/* ── 滚动条（DG 6.4-10：8px 半透明细窄条，hover 加深加宽至 10px） ──
+   「滚动停止 1s 后淡出」需要 JS 参与，留到 M1 与阅读区一起实现。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-text-secondary);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

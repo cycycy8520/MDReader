@@ -1,0 +1,103 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MD Viewer",
+  "version": "0.1.0",
+  "identifier": "com.mdviewer.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "MD Viewer",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "center": true,
+        "resizable": true,
+        "maximizable": true,
+        "minimizable": true,
+        "closable": true,
+        "decorations": false,
+        "transparent": false,
+        "shadow": true,
+        "visible": true,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; connect-src 'self'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
+    }
+  },
+  "plugins": {
+    "cli": {
+      "description": "MD Viewer 命令行接口（右键动词与无 UI 动作共用）",
+      "args": [
+        {
+          "name": "action",
+          "short": "a",
+          "description": "无 UI 动作：open | to-html | to-pdf | print | import-obsidian | share-image",
+          "takesValue": true
+        },
+        {
+          "name": "output",
+          "short": "o",
+          "description": "输出路径（to-html / to-pdf / share-image 使用）",
+          "takesValue": true
+        },
+        {
+          "name": "file",
+          "description": "目标 Markdown 文件路径",
+          "index": 1,
+          "takesValue": true
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "MD Viewer",
+    "category": "Productivity",
+    "shortDescription": "Windows 轻量 Markdown 查看器",
+    "longDescription": "MD Viewer —— 双击即开的 Windows 轻量 Markdown 查看器，严格只读。",
+    "copyright": "Copyright (c) 2026 MD Viewer Contributors",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["md", "markdown", "mdown", "mkd", "mkdn"],
+        "name": "Markdown",
+        "description": "Markdown 文档",
+        "mimeType": "text/markdown"
+      }
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installerHooks": "./nsis-hooks.nsh",
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false,
+        "compression": "lzma"
+      }
+    }
+  }
+}

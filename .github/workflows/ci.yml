@@ -1,0 +1,203 @@
+# MD Viewer for Windows —— CI 骨架
+#
+# 依据：DEV_GUIDE 11.3（CI）；AI_DEV_GUIDE 第 7 节 任务卡 M0-0（"CI 骨架 = DG 11.3 的子集"）
+# M0 子集范围（本文件当前实现）：
+#   pnpm lint / pnpm test / cargo test / cargo clippy -- -D warnings / pnpm check:no-cdn
+# 暂缓项：
+#   - tauri build：任务已写出，但整个 job 设 continue-on-error（见 bundle 任务上的说明）
+#   - tag 触发发版：M2 再加，见文件末尾 TODO
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支的新推送取消上一次运行（Windows runner 分钟数按 2 倍计费，别浪费）
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20' # DG 4.1：Node 20+
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 前端：lint + 单测 + 禁用域名扫描
+  # 跑在 ubuntu 上纯为省时间：这三项与平台无关（Windows 相关的逻辑都在 Rust 侧）。
+  # 若将来某个前端用例依赖 Windows 路径语义，把 runs-on 改成 windows-latest 即可。
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: 前端 lint / test / 禁用域名扫描
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        # 刻意不写 version：版本由 package.json 的 "packageManager": "pnpm@x.y.z" 决定。
+        # 两处同时指定版本时该 action 会直接报冲突失败，所以只保留一个事实来源。
+        with:
+          run_install: false
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: ESLint
+        run: pnpm lint
+
+      - name: 前端单测（vitest，DG 11.2）
+        run: pnpm test
+
+      - name: 禁用域名扫描（unpkg / jsdelivr，DG 8）
+        # 本任务不产出 dist/，脚本会打印"未发现产物"并以 0 退出（避免 M0 阶段误红）。
+        # 真正对产物生效的扫描在 bundle 任务里。
+        run: pnpm check:no-cdn
+
+  # ---------------------------------------------------------------------------
+  # Rust：cargo test + clippy（零告警，AI_DEV_GUIDE 第 5 节）
+  # 必须跑在 windows-latest：源码里有 WebView2 / COM / 注册表相关的 Windows-only 代码。
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Rust test / clippy
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 生成自托管 Vditor 资源（vendor/vditor 不入库）
+        # M0 阶段 vditor 依赖可能尚未进 package.json，先容错；M1 起删除 continue-on-error。
+        continue-on-error: true
+        run: node scripts/fetch-vditor.mjs
+
+      - name: 构建前端产物
+        # 不是多余步骤：tauri::generate_context! 在**编译期**校验 frontendDist 目录存在，
+        # 没有 dist/ 时 cargo test / clippy 会直接编译失败。
+        run: pnpm build
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: 缓存 cargo 目录
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: cargo clippy（-D warnings）
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # 打包：pnpm tauri build 出 NSIS 产物 + 对真实产物做禁用域名扫描
+  #
+  # 【为什么整个 job 是 continue-on-error】
+  # M0 阶段应用图标、签名方案与 Rust 依赖版本锁定（DG 9.3 风险 #4、红线 10/12）都还没就位，
+  # 打包链路预期会红。M0-0 任务卡明确规定 tauri build 任务可 allow-failure。
+  # 【M1 转为强制】M1 出口前删除下面的 continue-on-error，届时打包失败必须阻塞合并。
+  # ---------------------------------------------------------------------------
+  bundle:
+    name: tauri build（NSIS）—— M0 允许失败
+    runs-on: windows-latest
+    needs: [frontend, rust]
+    continue-on-error: true
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 生成自托管 Vditor 资源（DG 8 白名单）
+        continue-on-error: true
+        run: node scripts/fetch-vditor.mjs
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 cargo 目录
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-bundle-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bundle-
+            ${{ runner.os }}-cargo-
+
+      - name: pnpm tauri build
+        run: pnpm tauri build
+
+      - name: 禁用域名扫描（对真实产物，DG 8 硬性规定）
+        # 这一步才是 DG 8 那条"产物中不得出现 unpkg / jsdelivr"的实际执行者。
+        # M1 去掉 job 上的 continue-on-error 后，它自动成为强制门禁。
+        run: pnpm check:no-cdn
+
+      - name: 上传 NSIS 产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mdviewer-nsis
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: warn
+          retention-days: 7
+# -----------------------------------------------------------------------------
+# TODO(M2)：tag 触发的发版流程（DG 11.3 "tag 触发发版"）
+#   - 单独放 .github/workflows/release.yml，不要塞进本文件（本文件权限是只读 contents: read，
+#     发版需要 contents: write，权限面要隔离）
+#   - 触发：on.push.tags: ['v*.*.*']
+#   - 步骤：pnpm tauri build → 产物签名（签名方案见 DG 9.3 风险 #4，方案定案前不要自行"优化"）
+#           → 附 THIRD-PARTY-NOTICES 与 CHANGELOG → 创建 GitHub Release 并上传 NSIS 安装包
+#   - 前置条件：bundle 任务已在 M1 转为强制门禁，否则会带病发版
+# -----------------------------------------------------------------------------
