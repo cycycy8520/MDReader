@@ -1,8 +1,11 @@
 /**
  * 文案集中处 —— DG 11.7：V1 仅简体中文，预留英文位。
  * 规范：代码中禁止内联中文字符串（className 等技术值除外），一律从这里取。
- * 连带把「非文案但会显示的字形」（如 Hero 标记 M↓、编码名 UTF-8）也收在这里，
+ * 连带把「非文案但会显示的字形」（如 Hero 标记 M↓、刷新指示点 ●、占位破折号）也收在这里，
  * 免得组件里出现裸字符串。
+ *
+ * 编码名（UTF-8 / UTF-8 BOM / GBK）不在本文件：它是与 Rust `files::Encoding` 一一对应的
+ * 契约值，映射表在 src/types/index.ts 的 ENCODING_LABEL，状态栏直接查表。
  */
 
 export const zhCN = {
@@ -16,12 +19,16 @@ export const zhCN = {
 
   topbar: {
     toggleSidebar: "折叠 / 展开侧栏",
+    open: "打开文件",
     find: "查找",
     outline: "大纲",
     export: "导出",
     share: "分享",
     more: "更多",
     untitled: "未打开文件",
+    /** file watch 刷新后文件名旁闪一次的指示点字形（DG 6.4-7） */
+    refreshMark: "●",
+    refreshed: "文件已刷新",
   },
 
   window: {
@@ -41,21 +48,9 @@ export const zhCN = {
     collapseGroup: "折叠分组",
     expandGroup: "展开分组",
     empty: "暂无最近打开的文件",
+    /** 过滤框有内容但无命中（与「一条都没有」区分，避免误导） */
+    emptyFiltered: "没有匹配的文件",
     settings: "设置",
-
-    /**
-     * M0 视觉占位数据的文件名。
-     * M1 接入 recent.json（services/ipc.listRecent）后，本块与 App.tsx 里的
-     * M0_SAMPLE_GROUPS 一并删除。
-     */
-    sample: {
-      readme: "README.md",
-      guide: "开发指南.md",
-      api: "接口约定.md",
-      meeting: "会议纪要 0812.md",
-      changelog: "CHANGELOG.md",
-      design: "设计规范.md",
-    },
   },
 
   outline: {
@@ -70,17 +65,37 @@ export const zhCN = {
     emptyTitle: "打开一个 Markdown 文件",
     emptyHint: "拖入 .md 文件，或按 Ctrl+O 打开",
     setDefaultViewer: "设为默认查看器",
+    /** 加载/渲染中的一行淡字（DG 6.6：不做骨架屏） */
+    opening: "正在打开…",
+    rendering: "正在渲染…",
+    /** 错误态标题（技术细节另起一行小字，见 App 的 ReadingError） */
+    readFailed: "无法打开该文件",
+    renderFailed: "渲染失败",
+    fileMissing: "文件已被移动或删除",
+    /** 拖入文件时的全窗遮罩文案（FR-13 / DG 6.4-9） */
+    dropHint: "松开以打开文件",
+  },
+
+  /**
+   * 渲染管线（src/render/preview.ts）注入正文的就地文案。
+   * 代码块的「复制 / 已复制」复用 common.copy / common.copied，不在此重复。
+   */
+  preview: {
+    /** 红线 4：外链图片默认不发起任何外部请求，只显示占位块 */
+    externalImageBlocked: "外链图片默认不加载",
+    /** 占位块上的按钮：点击后才写入真实 src */
+    loadExternalImage: "点击加载",
   },
 
   status: {
     words: "字",
     lines: "行",
-    /** 编码名：技术值，但属可见文本，一并收口 */
-    encoding: "UTF-8",
     zoom: "缩放",
     fontSize: "字号",
     theme: "主题",
     toggleTheme: "切换主题",
+    /** 无文档时的占位字形（编码位等） */
+    placeholder: "—",
   },
 
   common: {

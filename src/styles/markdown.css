@@ -1,0 +1,246 @@
+/**
+ * Markdown 正文样式 —— 「基底 + 变量桥 + 增量」三层结构（对齐 MPE / GitHub 观感）。
+ *
+ * 基底：github-markdown-css@5.9.0 的变量版 github-markdown.css（main.tsx 中先于本文件引入）。
+ *   它就是 MPE 默认主题的同源样式表，自带完整 GitHub 排版（标题/列表/表格/引用/代码/
+ *   告警块/脚注……约 1200 行）。此前手写的 ~40 条排版规则与其大量重复，已删除；
+ *   本文件只保留 github 基底覆盖不到的增量与少数必要覆盖，每条注明保留理由。
+ *
+ * 变量桥：github 基底的规则全部消费 --fgColor-＊／--bgColor-＊／--borderColor-＊ 等 CSS 变量，
+ *   而这些变量的取值只写在 @media (prefers-color-scheme) 里（跟系统深浅），会与本应用的
+ *   <html data-theme> 主题机制打架。下面的桥把它们逐一指到 tokens.css 的 --md-* 语义变量：
+ *   桥与基底同特异性（.markdown-body），媒体查询不参与优先级比较，靠「本文件在源顺序上
+ *   更靠后」稳定压过基底取值，于是深浅两态 100% 跟随应用主题。
+ *   **main.tsx 的引入顺序（github 基底在前、本文件在后）是这套机制的前提，调换即翻车。**
+ *
+ * 作用域：阅读区容器同时挂 .markdown-body（吃基底）与 .md-content（吃增量），
+ *   见 App.tsx；不污染应用外壳。
+ */
+
+/* ══════════════════════════════════════════════════════════════
+   一、.markdown-body 变量桥 —— 颜色与字体全部走 tokens.css
+   ══════════════════════════════════════════════════════════════ */
+
+.markdown-body {
+  /* 基底的媒体查询会把 color-scheme 写死成「系统侧」的值；恢复继承，
+     让 index.css 在 :root 上按 data-theme 收敛出的 color-scheme 生效
+     （否则「应用浅色 + 系统深色」时正文里的滚动条 / 复选框会渲染成深色件） */
+  color-scheme: inherit;
+
+  /* 字体栈：必须换成带 Microsoft YaHei 的栈（tokens.css 注释），
+     基底默认栈在 Windows 中文环境会串味 */
+  --fontStack-sansSerif: var(--md-font-ui);
+  --fontStack-monospace: var(--md-font-mono);
+
+  /* 前景 */
+  --fgColor-default: var(--md-text-primary);
+  --fgColor-muted: var(--md-text-secondary); /* 引用块 / h6 / 脚注 */
+  --fgColor-accent: var(--md-accent);
+  --fgColor-success: var(--md-success);
+  --fgColor-attention: var(--md-warn);
+  --fgColor-danger: var(--md-danger);
+  /* done（GitHub 紫，[!IMPORTANT] 告警块用）：Token 层无紫色，归并到 accent */
+  --fgColor-done: var(--md-accent);
+
+  /* 背景。--bgColor-default 是深色模式最容易翻车的点：
+     基底给 .markdown-body 写了 background-color: var(--bgColor-default)，
+     不桥接的话「应用深色 + 系统浅色」会得到一大块刺眼的 #ffffff 白底 */
+  --bgColor-default: var(--md-bg-canvas);
+  --bgColor-muted: var(--md-bg-code); /* 代码块底 / 表格偶数行 */
+  --bgColor-neutral-muted: var(--md-bg-inline-code); /* 行内代码底（保留项要求） */
+  --bgColor-attention-muted: var(--md-accent-soft); /* ==mark== 底，与旧实现同款取色 */
+  --bgColor-danger-muted: var(--md-bg-hover-danger);
+
+  /* 边框 */
+  --borderColor-default: var(--md-border-l3); /* 表格框线 / 引用块左线 */
+  --borderColor-muted: var(--md-border-l2); /* h1/h2 下划线 / hr / 表格行线 */
+  --borderColor-neutral-muted: var(--md-border-l2); /* kbd 描边 */
+  --borderColor-accent-emphasis: var(--md-accent);
+  --borderColor-success-emphasis: var(--md-success);
+  --borderColor-attention-emphasis: var(--md-warn);
+  --borderColor-danger-emphasis: var(--md-danger);
+  --borderColor-done-emphasis: var(--md-accent);
+  --focus-outlineColor: var(--md-accent);
+
+  /* --color-prettylights-syntax-* 刻意不桥接：那套变量只被 .pl-*（starry-night
+     高亮产物）消费，本项目代码高亮走 hljs（Vditor highlightRender 注入
+     github / github-dark 主题 CSS），.pl-* 节点根本不会出现 */
+}
+
+/* ══════════════════════════════════════════════════════════════
+   二、列宽三态 —— 作用在阅读区外层容器（App.tsx data-reading-width）
+   fluid = 内容宽度跟随窗口（MPE 行为，当前默认）；
+   medium = 748px 适中（沿用旧版列宽）；wide = 1000px。
+   切换 UI 属后续设置页，本次只保证 CSS 与容器属性就位。
+   ══════════════════════════════════════════════════════════════ */
+
+[data-reading-width] {
+  width: 100%;
+  margin: 0 auto;
+  padding: 32px;
+}
+
+/* 窄窗口收边距（断点 ≈ --md-reading-min 640 加两侧留白的量级） */
+@media (max-width: 720px) {
+  [data-reading-width] {
+    padding: 16px;
+  }
+}
+
+[data-reading-width="fluid"] {
+  max-width: none;
+}
+
+/* 适中档沿用 tokens.css 的 --md-reading-w（748，勿删），与旧版 max-w-reading 行为一致 */
+[data-reading-width="medium"] {
+  max-width: var(--md-reading-w);
+}
+
+[data-reading-width="wide"] {
+  max-width: 1000px;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   三、增量与必要覆盖 —— 每条注明「为什么 github 基底不覆盖」
+   ══════════════════════════════════════════════════════════════ */
+
+/* 长串防裁切：基底只有 word-wrap:break-word，无空格长串（长 URL / 哈希）碰上
+   中文标点混排时仍可能撑破列宽；anywhere 允许在任意点断行 */
+.md-content {
+  overflow-wrap: anywhere;
+}
+
+/* 行内代码不参与 anywhere 断行：否则会在 token 中间被劈开
+   （基底不知道我们在容器上开了 anywhere，故必须由我们自己收回来） */
+.md-content :not(pre) > code {
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+/* 列表符号找回：Tailwind preflight 把 ul/ol 的 list-style 清成 none，而基底只补了
+   padding 与 ol 的嵌套序号类型（lower-roman 等），ul 的 disc/circle/square 依赖
+   UA 默认值——基底假设没有 preflight。revert 回滚到 UA 值即可，嵌套换符号随之免费获得；
+   基底更高特异性的 ol ol 规则（0,1,2）仍会压过本条（0,1,1），行为与 GitHub 一致 */
+.md-content ul,
+.md-content ol {
+  list-style: revert;
+}
+
+/* 任务列表：Vditor 输出的类名是 li.vditor-task，基底只认 GitHub 的 .task-list-item */
+.md-content li.vditor-task {
+  list-style: none;
+}
+.md-content li.vditor-task input[type="checkbox"] {
+  /* 负外边距把复选框拉回项目符号位（与基底 .task-list-item-checkbox 同手法） */
+  margin: 0 0.4em 0.25em -1.5em;
+  vertical-align: middle;
+  accent-color: var(--md-accent);
+}
+
+/* 代码块：圆角 12px + 发丝描边对齐参考项目（基底是 6px 无描边——审美覆盖项）；
+   底色 / 字体 / overflow-x:auto 已由基底 + 变量桥接管，不再重复 */
+.md-content pre {
+  border-radius: 12px;
+  border: 1px solid var(--md-border-l1);
+}
+
+/* 表格横向滚动包裹：基底把 table 自身设为滚动容器（display:block + overflow:auto），
+   会丢掉 table 布局语义；渲染层（preview.ts wrapTables）统一把裸 table 包进
+   .md-table-wrap 后，滚动交给包裹层，表格自身恢复 display:table，
+   且 max-width:none 保证超宽表格绝不被裁切、只在包裹层内滚动（用户最高优先诉求） */
+.md-content .md-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 16px;
+}
+.md-content .md-table-wrap > table {
+  display: table;
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  margin-bottom: 0;
+}
+
+/* 外链图片占位（红线 4：默认不发起网络请求）——业务专属 UI，基底不可能有 */
+.md-content .md-remote-image {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0;
+  padding: 12px 14px;
+  border: 1px dashed var(--md-border-l3);
+  border-radius: 8px;
+  color: var(--md-text-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/* frontmatter 属性卡片（FR-14）——业务专属 UI，基底不可能有 */
+.md-content .md-frontmatter {
+  margin: 0 0 24px;
+  padding: 12px 16px;
+  border: 1px solid var(--md-border-l2);
+  border-radius: 12px;
+  background: var(--md-bg-panel);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.md-content .md-frontmatter dt {
+  color: var(--md-text-tertiary);
+}
+
+.md-content .md-frontmatter dd {
+  margin: 0 0 6px;
+  color: var(--md-text-secondary);
+}
+
+/* Mermaid / KaTeX：Vditor 渲染产物的容器类，基底不认识。
+   图表撑满列宽居中；公式块自带横向滚动（超宽公式同样不裁切） */
+.md-content .language-mermaid,
+.md-content .language-mermaid svg {
+  display: block;
+  margin: 16px auto;
+  max-width: 100%;
+}
+
+.md-content .katex-display {
+  margin: 16px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+
+/* 脚注：Vditor 的类名（vditor-footnotes / footnotes-list）与 GitHub 的 .footnotes 不同，
+   基底选择器匹配不上 */
+.md-content .vditor-footnotes__goto-ref {
+  color: var(--md-accent);
+  text-decoration: none;
+}
+
+.md-content .footnotes-list,
+.md-content .vditor-footnotes {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--md-border-l2);
+  font-size: 14px;
+  line-height: 24px;
+  color: var(--md-text-secondary);
+}
+
+/* 标题锚点：Vditor 的 .vditor-anchor（行内跟在标题后）与 GitHub 的 .anchor
+   （八角图标 + 负外边距浮动）是两套 DOM，基底样式作用不到；hover 才显现，不干扰阅读 */
+.md-content .vditor-anchor {
+  opacity: 0;
+  margin-left: 6px;
+  color: var(--md-text-tertiary);
+}
+
+.md-content :where(h1, h2, h3, h4, h5, h6):hover .vditor-anchor {
+  opacity: 1;
+}
+
+.md-content .vditor-anchor svg {
+  width: 14px;
+  height: 14px;
+  vertical-align: middle;
+}

@@ -31,6 +31,10 @@ pub mod shell_integ;
 
 use tauri::App;
 
+/// 「打开某个路径」事件名 —— 前后端契约，前端 `services/ipc.ts` 的
+/// `EVENT_OPEN_PATH` 必须逐字一致（单实例转发 / 文件关联双击都汇聚到这里）。
+pub const EVENT_OPEN_PATH: &str = "open-path";
+
 /// 启动流程入口：由 `main.rs` 在 `Builder::setup` 阶段调用。
 ///
 /// 这里只做「窗口出现之前必须完成」的事；耗时操作一律不要放这里（冷启动预算

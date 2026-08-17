@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "MDNaonao 主窗口最小权限集：核心默认 + cli + clipboard-manager 写入。新增权限必须写明用途并同步 DG。",
+  "description": "MDNaonao 主窗口最小权限集。逐条用途（JSON 不支持注释，故集中记在此处；新增权限必须补一行说明并同步 DG）：[core:default] Tauri 核心默认集（invoke / event / path / 窗口基础能力），去掉应用无法启动。[core:window:allow-start-dragging] 自绘标题栏拖拽（decorations:false，DG 6.2）。[core:window:allow-is-maximized / minimize / maximize / unmaximize / toggle-maximize / close] 自绘标题栏三键与双击标题栏最大化。[core:window:allow-set-focus] 单实例二次启动时把已有窗口拉到前台（DG 7.4）。[cli:default] 读取 --action / --output / 文件路径参数（DG 7.4 右键动词与无 UI 动作）。[clipboard-manager:allow-write-text / write-html / write-image] 复制纯文本、富文本 HTML、长图到剪贴板（FR-08/FR-09）。严格只读应用，故**不申请任何 read 权限**。[dialog:allow-open] Ctrl+O 打开文件选择框（M1 主链路）。只放行 open —— save/message/ask/confirm 一律不给：save 属于写盘能力（红线：严格只读），提示框全部走前端自绘 Toast/Dialog。注意：asset 协议（查看态本地图片）在 Tauri 2 中**没有对应的 ACL 权限项**（core 只有 app/event/image/menu/path/resources/tray/webview/window 九组，没有 core:asset），它只由 Cargo feature `protocol-asset` + tauri.conf.json 的 app.security.assetProtocol.{enable,scope} 控制，因此本文件无需也无法为它添加条目。asset scope 的边界说明（tauri.conf.json 是严格 JSON、Config 结构体带 deny_unknown_fields，写不进注释，故记在这里）：M1 的 allow 只覆盖用户 profile 下的常用文档目录（$DESKTOP/$DOCUMENT/$DOWNLOAD/$PICTURE/$PUBLIC/$HOME），**绝不使用 [\"**\"] 全盘放行**；deny 明确挡掉 $DATA（%APPDATA%，含本应用 settings.json 与飞书 DPAPI 密文）、$LOCALDATA（%LOCALAPPDATA%，浏览器凭据库）以及 $HOME/.ssh、$HOME/.aws、$HOME/.gnupg，且 deny 在 Tauri 的 Scope::is_allowed 中优先级高于任何 allow（含运行时追加的授权）。非用户目录（D:\\ 盘、UNC 共享）的图片靠运行时按目录授权补齐，见 src-tauri/src/settings.rs 的 allow_asset_dir。M2 收敛计划：删掉 allow 里的 $HOME/** 与四个已被它覆盖的已知文件夹，只保留 deny，全部授权改为打开文档时由 allow_asset_dir 按单目录下发（授权集合只存在于进程内存，不落盘）。",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -19,6 +19,8 @@
 
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-write-html",
-    "clipboard-manager:allow-write-image"
+    "clipboard-manager:allow-write-image",
+
+    "dialog:allow-open"
   ]
 }

@@ -35,7 +35,24 @@
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; connect-src 'self'",
       "assetProtocol": {
         "enable": true,
-        "scope": []
+        "scope": {
+          "allow": [
+            "$DESKTOP/**",
+            "$DOCUMENT/**",
+            "$DOWNLOAD/**",
+            "$PICTURE/**",
+            "$PUBLIC/**",
+            "$HOME/**"
+          ],
+          "deny": [
+            "$DATA/**",
+            "$LOCALDATA/**",
+            "$HOME/.ssh/**",
+            "$HOME/.aws/**",
+            "$HOME/.gnupg/**"
+          ],
+          "requireLiteralLeadingDot": false
+        }
       }
     }
   },

@@ -17,6 +17,35 @@ import type { RecentFile, ScrollAnchor } from "../types";
 /** LRU 上限（DG 5.3 / 7.3） */
 export const RECENT_LIMIT = 200;
 
+/**
+ * 会话内排序冻结（修复「点击第二项立刻跳到第一位、鼠标下的条目来回跳」）。
+ *
+ * 通行做法（DeepSeek/ChatGPT 会话列表、VS Code Open Editors 同理）：
+ * **可见列表在交互期间保持稳定，绝不在鼠标下重排**。LRU 的真实时间照常写入
+ * recent.json（下次启动自然按新顺序展示），但本次会话内展示用的 openedAt
+ * 固定为条目**首次出现时**的值——排序、分组、时间戳三者因此都不会跳。
+ * 会话内新打开的文件不在基线里，按真实时间进「今天」组顶部（发生在列表最上方，
+ * 不会造成鼠标下位移）。置顶/移除是用户显式操作，移动是符合预期的，不冻结。
+ */
+const sessionBaseline = new Map<string, number>();
+
+function baselineKey(path: string): string {
+  return path.replace(/\//g, "\\").toLowerCase();
+}
+
+/** 展示层覆盖：openedAt 固定为会话内首见值，真实值仍由后端持久化 */
+function freezeForDisplay(items: RecentFile[]): RecentFile[] {
+  return items.map((item) => {
+    const key = baselineKey(item.path);
+    const frozen = sessionBaseline.get(key);
+    if (frozen === undefined) {
+      sessionBaseline.set(key, item.openedAt);
+      return item;
+    }
+    return frozen === item.openedAt ? item : { ...item, openedAt: frozen };
+  });
+}
+
 interface RecentFilesState {
   items: RecentFile[];
   /** 首次从后端加载是否完成（未完成时左栏显示骨架而非空状态） */
@@ -36,9 +65,9 @@ interface RecentFilesState {
   setMissingPaths: (paths: string[]) => void;
 }
 
-/** 排序：置顶优先，其次按最近打开时间倒序 */
+/** 排序：置顶优先，其次按（冻结后的）打开时间倒序 */
 function sortItems(items: RecentFile[]): RecentFile[] {
-  return [...items].sort((a, b) => {
+  return [...freezeForDisplay(items)].sort((a, b) => {
     if (a.pinned !== b.pinned) {
       return a.pinned ? -1 : 1;
     }

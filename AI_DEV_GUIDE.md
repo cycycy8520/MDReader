@@ -83,6 +83,8 @@
 | 14 | clipboard-manager `write_html(html, alt_text)` 自动生成 CF_HTML 头并同时写纯文本 | 不手工拼 CF_HTML 头 |
 | 15 | 2024 年起 EV 证书无 SmartScreen 即时声誉；Azure Trusted Signing 个人通道关闭（仅美加 3 年以上组织） | 签名方案不要自行"优化"，按 DG 9.3 风险 #4 |
 | 16 | Tauri 拖动区（data-tauri-drag-region）自带双击最大化；无边框+可缩放窗口下 Win+方向键分屏 OS 默认支持；右键标题栏系统菜单需自研 | 按 DG 6.2 分清"要做的"和"白送的" |
+| 17 | `cargo build --release` 产出的 exe 内嵌 devUrl（localhost:1420），离开开发服务器即白屏/报错（2026-08-18 实际故障）；只有 `pnpm tauri build` 走生产路径真正内嵌前端 | **交付用户验证的产物一律 `pnpm tauri build`**；另注意仅改前端时 Rust 不重编，dist 不会重新内嵌 |
+| 18 | 编译通过 + 日志正确 ≠ UI 正确：列宽写死、内容裁切、浏览器右键菜单等问题只有视觉检查能发现（用户已两次代替开发承担测试） | UI 改动交付前必须视觉自验：真实文档 × 窄/1080p/2K 三档窗口 × 深浅主题 |
 
 ---
 

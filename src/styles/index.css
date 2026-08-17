@@ -4,7 +4,7 @@
  * 职责边界：
  *   本文件 = Token 引入 + Tailwind 三条指令 + 基础重置 + 滚动条 + 焦点/选中/降级动效。
  *   颜色与尺寸的定义在 src/styles/tokens.css，类名映射在 tailwind.config.js，本文件都不重复定义。
- *   阅读区排版（正文/标题/代码块的字号行高与间距）属于渲染管线的样式层（M0-② / M1），不在此实现。
+ *   阅读区排版（正文/标题/代码块的字号行高与间距）在 src/styles/markdown.css，作用域限定 .md-content。
  *
  * 全文的取值依据来自对参考项目 DeepSeek Harness 客户端的实测提取，
  * 每段注释标注了出处，改动前请先确认参考项目里的对应实现。
@@ -15,6 +15,12 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Markdown 正文排版（DG 5.4）见 src/styles/markdown.css，
+   由 main.tsx 在本文件之后引入——CSS 的 @import 必须置于所有语句之前，
+   放这里会被 Vite 拒绝，而放文件顶端又会排在 Tailwind preflight 之前。
+   （.md-content h1 的特异性本就高于 preflight 的裸 h1，顺序不影响结果，
+   但经 JS 引入的加载顺序更直观，也避免了 @import 的位置约束。） */
 
 @layer base {
   /* ── color-scheme 同步 ──────────────────────────────────────

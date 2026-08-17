@@ -25,6 +25,11 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-cli = "2"
 tauri-plugin-clipboard-manager = "2"
+# 文件对话框（Ctrl+O、FR-13）——官方插件，M1「打开文件」的必需件
+tauri-plugin-dialog = "2"
+
+# GBK 解码兜底（DG 8「编码」/ DG 10-4：中文用户大量 GBK 文件，不做兜底会被骂乱码）
+encoding_rs = "0.8"
 
 # —— 序列化 ——
 serde = { version = "1", features = ["derive"] }

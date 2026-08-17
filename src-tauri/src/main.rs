@@ -25,9 +25,18 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             mdnaonao_lib::cmdline::handle_second_instance(app, argv, cwd);
         }))
+        // 以下插件之间彼此无序，只要都排在 single-instance 之后即可。
         .plugin(tauri_plugin_cli::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // dialog：Ctrl+O「打开文件」的文件选择框（M1 主链路入口之一）。
+        // 只在前端经 src/services/ipc.ts 的 openFileDialog 调用；权限见
+        // capabilities/default.json 的 dialog:allow-open（只放行 open，不放行 save/message）。
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| mdnaonao_lib::run(app))
+        // 注意：这里刻意**不**用 on_page_load 投递冷启动路径。
+        // 实测 PageLoadEvent::Finished 早于 React 挂载完成、早于 listen() 注册，
+        // emit 出去照样没人接（Tauri 不重放事件），反而把暂存值提前消费掉。
+        // 冷启动统一走「前端挂载后主动拉取」：cmdline::take_pending_open。
         .invoke_handler(tauri::generate_handler![
             // files（DG 7.1）
             mdnaonao_lib::files::read_markdown,
@@ -59,6 +68,8 @@ fn main() {
             mdnaonao_lib::shell_integ::open_default_apps_settings,
             mdnaonao_lib::shell_integ::register_extra_verbs,
             mdnaonao_lib::shell_integ::unregister_extra_verbs,
+            // cmdline：前端挂载后取走冷启动待打开的文件（双击 .md / 命令行传参）
+            mdnaonao_lib::cmdline::take_pending_open,
             // settings
             mdnaonao_lib::settings::load_settings,
             mdnaonao_lib::settings::save_settings,

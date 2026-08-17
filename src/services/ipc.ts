@@ -16,8 +16,10 @@
  * 前端调用会 reject，属预期行为（实现随 M1 各任务落地）。
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type {
@@ -65,6 +67,22 @@ export async function unwatchFile(): Promise<void> {
 /** 在资源管理器中定位文件（FR-03 右键菜单）。→ Rust: files::reveal_in_explorer(path) */
 export async function revealInExplorer(path: string): Promise<void> {
   return invoke<void>("reveal_in_explorer", { path });
+}
+
+/**
+ * 本地文件绝对路径 → WebView 可加载的 asset 协议 URL（DG 8「查看态本地图片」）。
+ *
+ * 不是 invoke，而是 Tauri 内置的 `convertFileSrc`：它把路径编码进
+ * `http://asset.localhost/...`（Windows），中文与空格由内部 encodeURIComponent 处理。
+ * 放在这里的唯一理由是纪律——渲染层（src/render/preview.ts）同样禁止直接 import
+ * @tauri-apps/api，本文件是唯一豁免点。
+ *
+ * 注意：非 Tauri 环境（纯浏览器 dev / 单测）下 __TAURI_INTERNALS__ 不存在，本函数会抛错，
+ * 调用方需自行 try/catch 降级。
+ * 另外，能否真正加载还取决于 tauri.conf.json 的 security.assetProtocol.scope 是否放行该路径。
+ */
+export function toAssetUrl(path: string): string {
+  return convertFileSrc(path);
 }
 
 /* ── 最近列表（M1：files.rs + recent.json，DG 7.3） ──────────── */
@@ -165,19 +183,38 @@ export async function saveSettings(settings: Settings): Promise<void> {
   return invoke<void>("save_settings", { settings });
 }
 
-/* ── 尚未就绪的能力（不要调用，会因命令不存在而 reject） ────── */
+/* ── 打开文件（Ctrl+O / 空状态按钮） ───────────────────────── */
 
 /**
- * 「打开文件」对话框（Ctrl+O，FR-13 之外的显式入口）。
+ * 「打开文件」对话框（Ctrl+O）。用户取消返回 null。
  *
- * 【阻塞】Tauri 2 的文件对话框需要 tauri-plugin-dialog，属新增运行时依赖，
- * 按 AI_DEV_GUIDE 红线 12 必须先经人类批准，故 Rust 侧当前没有对应 command。
- * M1 实现前请先申请该依赖；在此之前本函数直接抛错，避免调用一个不存在的命令。
+ * 走官方 tauri-plugin-dialog 而非自定义 command：对话框是插件内置能力。
+ * 权限见 capabilities/default.json 的 `dialog:allow-open`——**只放行 open**，
+ * save/message/ask/confirm 一律不给（save 属写盘能力，与严格只读冲突）。
+ * 扩展名过滤与 bundle.fileAssociations 注册的五个后缀保持一致（DG 8）。
  */
 export async function openFileDialog(): Promise<string | null> {
-  throw new Error(
-    "openFileDialog 未就绪：需先引入 tauri-plugin-dialog（红线 12：新增运行时依赖需人类批准）",
-  );
+  const picked = await openDialog({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "Markdown", extensions: MARKDOWN_EXTENSIONS }],
+  });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** 与 tauri.conf.json 的 bundle.fileAssociations.ext 保持一致（DG 8） */
+export const MARKDOWN_EXTENSIONS = ["md", "markdown", "mdown", "mkd", "mkdn"];
+
+/**
+ * 取走冷启动待打开的文件路径（双击 .md 或命令行传参启动时）。
+ *
+ * 为什么不用事件：冷启动时 Rust 侧解析完命令行，前端还没挂载，
+ * emit 出去无人接收且 Tauri 不重放事件。故后端暂存、前端挂载后主动取。
+ * 取走即清空，返回 null 表示无参数启动（走空状态页）。
+ * → Rust: cmdline::take_pending_open(app)
+ */
+export async function takePendingOpen(): Promise<string | null> {
+  return invoke<string | null>("take_pending_open");
 }
 
 /* ── 窗口控制（DG 6.2 自绘标题栏三键） ─────────────────────── */
@@ -239,5 +276,31 @@ export async function onOpenPath(
 ): Promise<UnlistenFn> {
   return listen<string>(EVENT_OPEN_PATH, (event) => {
     handler(event.payload);
+  });
+}
+
+/* ── 拖拽打开（FR-13） ──────────────────────────────────────── */
+/* tauri.conf.json 的 dragDropEnabled = true：拖放由 WebView2 原生接管，
+   HTML5 的 dragover/drop 事件不会派发到页面，必须走 Tauri 的 webview 事件才拿得到
+   绝对路径。这里把官方的四态事件收敛成前端需要的三态。 */
+
+export type DragDropPhase = "enter" | "over" | "drop" | "leave";
+
+export interface DragDropPayload {
+  phase: DragDropPhase;
+  /** enter / drop 才有路径；over / leave 为空数组 */
+  paths: string[];
+}
+
+/** 订阅窗口拖放事件（遮罩显隐 + 松手打开）。 */
+export async function onDragDrop(
+  handler: (payload: DragDropPayload) => void,
+): Promise<UnlistenFn> {
+  return getCurrentWebview().onDragDropEvent((event) => {
+    const data = event.payload;
+    handler({
+      phase: data.type,
+      paths: data.type === "enter" || data.type === "drop" ? data.paths : [],
+    });
   });
 }

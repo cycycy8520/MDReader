@@ -113,8 +113,20 @@ pub fn handle_first_instance(app: &AppHandle) -> AppResult<()> {
     match parse(&argv) {
         Ok(cli) => {
             tracing::info!(?cli, "冷启动命令行解析完成");
-            let _ = app;
-            // TODO(M1)：dispatch(app, cli, cwd)
+            if let Some(file) = cli.file.as_ref() {
+                // 冷启动时前端尚未挂载，emit 出去没人接（事件不会重放）。
+                // 故暂存到进程状态，由前端挂载后主动调 take_pending_open 取走。
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let target = resolve_against(&cwd, file);
+                tracing::info!(path = %target.display(), "冷启动待打开文件已暂存");
+                set_pending_open(app, target);
+            }
+            if cli.action.is_headless() {
+                // TODO(M2)：无 UI 动作（to-html / to-pdf / …）在此直跑后退出进程
+                tracing::warn!(action = %cli.action, "无 UI 动作尚未实现，按普通启动处理");
+            }
         }
         Err(err) => {
             // 解析失败不阻塞启动：退化成「无参数启动」，走空状态页
@@ -124,19 +136,79 @@ pub fn handle_first_instance(app: &AppHandle) -> AppResult<()> {
     Ok(())
 }
 
+/// 冷启动待打开文件的暂存槽。
+///
+/// 为什么不直接 emit：`handle_first_instance` 在 `Builder::setup` 阶段执行，
+/// 此时 WebView 尚未加载完前端，Tauri 的事件没有重放机制，emit 出去会石沉大海。
+#[derive(Default)]
+pub struct PendingOpen(pub std::sync::Mutex<Option<PathBuf>>);
+
+fn set_pending_open(app: &AppHandle, path: PathBuf) {
+    use tauri::Manager;
+    if app.try_state::<PendingOpen>().is_none() {
+        app.manage(PendingOpen::default());
+    }
+    if let Some(state) = app.try_state::<PendingOpen>() {
+        if let Ok(mut slot) = state.0.lock() {
+            *slot = Some(path);
+        }
+    }
+}
+
+/// 前端挂载后调用一次：取走并清空冷启动待打开的文件路径。
+///
+/// 这是冷启动的**唯一**通道。曾试过在 `on_page_load(Finished)` 里 emit 事件，
+/// 实测该时机仍早于 React 挂载与 `listen()` 注册，事件照样丢失且会提前消费掉暂存值——
+/// 拉取模型（前端就绪后主动要）才是无竞态的那个。
+///
+/// 返回 None 表示无参数启动（走空状态页）。取走即清空，避免刷新页面时重复打开。
+#[tauri::command]
+pub async fn take_pending_open(app: AppHandle) -> AppResult<Option<String>> {
+    use tauri::Manager;
+    let Some(state) = app.try_state::<PendingOpen>() else {
+        return Ok(None);
+    };
+    let taken = state
+        .0
+        .lock()
+        .map_err(|e| AppError::config(format!("读取冷启动暂存失败：{e}")))?
+        .take();
+    tracing::info!(
+        hit = taken.is_some(),
+        path = taken.as_ref().map(|p| p.display().to_string()),
+        "前端取走冷启动暂存"
+    );
+    Ok(taken.map(|p| p.to_string_lossy().into_owned()))
+}
+
 /// 热启动路径：tauri-plugin-single-instance 回调转发的第二实例参数（DG 7.2-1）。
 ///
 /// 性能契约（DG 3.2）：自本回调收到路径至首帧渲染完成 ≤ 1s。
 ///
 /// TODO(M1)：解析后 —— 聚焦并置前主窗口 → 打开/切换到目标文件 → 计入最近列表。
 pub fn handle_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
+    use tauri::{Emitter, Manager};
+
     tracing::info!(?argv, cwd = %cwd, "收到第二实例参数");
     match parse(&argv) {
         Ok(cli) => {
             let target = cli.file.as_ref().map(|file| resolve_against(&cwd, file));
             tracing::info!(action = ?cli.action, ?target, "第二实例命令行解析完成");
-            let _ = app;
-            // TODO(M1)：dispatch(app, cli, &cwd)
+
+            // 主窗口拉到前台（DG 7.2-1：双击第二个文件应切到已有实例）
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.unminimize();
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+
+            // 前端此时已挂载，直接 emit（与冷启动的暂存槽是两条路径）
+            if let Some(path) = target {
+                let payload = path.to_string_lossy().into_owned();
+                if let Err(err) = app.emit(crate::EVENT_OPEN_PATH, payload) {
+                    tracing::error!(%err, "转发打开路径失败");
+                }
+            }
         }
         Err(err) => {
             tracing::warn!(%err, "第二实例命令行解析失败，忽略本次转发");

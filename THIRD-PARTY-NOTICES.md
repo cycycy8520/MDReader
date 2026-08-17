@@ -22,6 +22,7 @@
 | KaTeX | 数学公式渲染（Vditor 内置调用） | MIT | Vditor 内置 | 随 Vditor 白名单资源分发；含 KaTeX 字体文件 |
 | highlight.js | 代码高亮（Vditor 内置调用） | **待核实**（上游为 BSD-3-Clause） | Vditor 内置 | 同上 |
 | [DOMPurify](https://github.com/cure53/DOMPurify) | XSS 三层防御第二层（红线 1） | **(MPL-2.0 OR Apache-2.0) 双许可** | 待冻结 | 双许可，二选一遵守；MPL-2.0 为文件级 copyleft，本项目仅作依赖引用、不修改其源码，因此无源码开放义务 |
+| [github-markdown-css](https://github.com/sindresorhus/github-markdown-css) | 阅读区排版基底（对齐 GitHub / MPE 默认主题观感） | MIT | 5.9.0 | 引入变量版单文件 `github-markdown.css`；颜色变量经 `src/styles/markdown.css` 顶部的变量桥映射到本项目 Token，深浅主题跟随应用 `data-theme` |
 | [React](https://github.com/facebook/react) / react-dom | UI 框架 | MIT | 18.x（待冻结） | |
 | [Zustand](https://github.com/pmndrs/zustand) | 状态管理 | MIT | 待冻结 | |
 | [Tailwind CSS](https://github.com/tailwindlabs/tailwindcss) | 样式（仅 Token 化使用，红线 14） | MIT | 待冻结 | 产物为生成的 CSS |
