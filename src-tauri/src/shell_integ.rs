@@ -777,6 +777,7 @@ mod tests {
             id: "vscode".to_string(),
             name: "Visual Studio Code".to_string(),
             path: PathBuf::from(r"C:\Users\x\AppData\Local\Programs\Microsoft VS Code\Code.exe"),
+            icon_data_url: None,
         }];
 
         assert!(is_known_editor(
@@ -803,57 +804,122 @@ mod tests {
 
     /* ── 顺序与探测结果 ───────────────────────────────────────── */
 
-    /// 候选表的顺序就是菜单顺序：VS Code 系列在最前，记事本永远垫底。
+    /// 候选兜底表的顺序就是兜底段的菜单顺序：VS Code 系列在最前，记事本永远垫底。
     #[test]
     fn candidate_table_puts_vscode_first_and_notepad_last() {
-        let ids: Vec<&str> = EDITOR_CANDIDATES
+        let exes: Vec<&str> = EDITOR_CANDIDATES
             .iter()
-            .map(|candidate| candidate.id)
+            .map(|candidate| candidate.exe)
             .collect();
-        assert_eq!(ids.first().copied(), Some("vscode"));
-        assert_eq!(ids.get(1).copied(), Some("vscode-insiders"));
-        assert_eq!(ids.last().copied(), Some("notepad"));
-        // id 是菜单项 key，重了就是 React 渲染出问题
-        let mut sorted = ids.clone();
+        assert_eq!(exes.first().copied(), Some("Code.exe"));
+        assert_eq!(exes.get(1).copied(), Some("Code - Insiders.exe"));
+        assert_eq!(exes.last().copied(), Some("notepad.exe"));
+        // exe 名兼作菜单项 id（小写化后），重了就是 React 渲染出问题
+        let mut sorted: Vec<String> = exes.iter().map(|exe| exe.to_lowercase()).collect();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), ids.len(), "候选 id 必须互不重复");
+        assert_eq!(sorted.len(), exes.len(), "候选 exe 名必须互不重复");
     }
 
-    /// 探测结果必须（a）逐个真实存在，（b）保持候选表的相对顺序。
+    /// 规则驱动探测（批次 5.7）的三条不变式：
+    /// （a）逐个真实存在；（b）按路径去重；（c）绝不包含本应用自身。
     #[test]
-    fn detected_editors_exist_and_keep_table_order() {
-        let ids: Vec<&str> = EDITOR_CANDIDATES
-            .iter()
-            .map(|candidate| candidate.id)
-            .collect();
+    fn detected_editors_exist_dedupe_and_exclude_self() {
         let detected = detect_editors();
-
-        let mut cursor = 0usize;
+        let mut seen = std::collections::HashSet::new();
         for editor in &detected {
             assert!(
                 editor.path.is_file(),
                 "探测结果必须逐个 is_file 校验过：{editor:?}"
             );
-            let at = ids
-                .iter()
-                .position(|id| *id == editor.id.as_str())
-                .expect("探测结果只能来自候选表");
-            assert!(at >= cursor, "顺序偏离候选表：{detected:?}");
-            cursor = at + 1;
+            assert!(
+                seen.insert(normalize_for_compare(&editor.path)),
+                "同一路径出现两次：{detected:?}"
+            );
+            let stem = editor
+                .path
+                .file_stem()
+                .map(|value| value.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            assert_ne!(stem, SELF_EXE_STEM, "探测结果包含了本应用自身：{detected:?}");
         }
     }
 
-    /// 记事本是系统自带的兜底：它探不到，说明众所周知位置那条退路整条坏了。
+    /// 记事本是系统自带的兜底：它探不到，说明候选兜底那条退路整条坏了。
+    /// （规则来源可能把别的编辑器排在它前面，但它必须**在**且在兜底段的最后。）
     #[cfg(windows)]
     #[test]
     fn notepad_is_the_always_available_fallback() {
         let detected = detect_editors();
         assert_eq!(
             detected.last().map(|editor| editor.id.as_str()),
-            Some("notepad"),
-            "记事本必须探得到且排在最后：{detected:?}"
+            Some("notepad.exe"),
+            "记事本必须探得到且垫底：{detected:?}"
         );
+    }
+
+    /// 图标提取全链路（SHGetFileInfo → WIC → base64）：拿系统必有的记事本当靶子。
+    /// 只断言前缀与非空——PNG 字节因系统主题/版本而异，比内容就是比运气。
+    #[cfg(windows)]
+    #[test]
+    fn extracts_notepad_icon_as_png_data_url() {
+        let Some(notepad) = lookup_well_known(&[
+            ("SystemRoot", r"System32\notepad.exe"),
+            ("SystemRoot", "notepad.exe"),
+        ]) else {
+            return; // 极端精简镜像没有记事本：放弃断言而不是误报
+        };
+        let icon = editor_icon_data_url(&notepad).expect("记事本必须能提出图标");
+        assert!(icon.starts_with("data:image/png;base64,"), "{icon:.60}");
+        assert!(icon.len() > 100, "PNG 不该只有头没有身子");
+    }
+
+    /* ── OpenWith 规则来源的纯函数 ─────────────────────────────── */
+
+    /// MRUList 顺序还原：列到的按序取，没列到的追加在尾。
+    #[test]
+    fn mru_ordering_follows_the_list_then_appends_rest() {
+        let entries: Vec<(String, String)> = [
+            ("a", "ima.exe"),
+            ("b", "rider64.exe"),
+            ("c", "Code.exe"),
+            ("d", "stray.exe"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        assert_eq!(
+            order_by_mru(&entries, "cab"),
+            vec!["Code.exe", "ima.exe", "rider64.exe", "stray.exe"]
+        );
+        // MRUList 缺失：按枚举顺序原样输出
+        assert_eq!(order_by_mru(&entries, "").len(), 4);
+    }
+
+    /// open command 的三种历史写法都要能取出 exe：带引号带参、不带引号带参、纯路径。
+    #[test]
+    fn parses_open_command_variants() {
+        let dir = scratch_dir("open-command");
+        let spaced = dir.join("sub dir");
+        std::fs::create_dir_all(&spaced).unwrap();
+        let exe = spaced.join("editor.exe");
+        std::fs::write(&exe, [0u8; 4]).unwrap();
+        let exe_str = exe.to_string_lossy();
+
+        assert_eq!(
+            parse_command_exe(&format!("\"{exe_str}\" \"%1\"")),
+            Some(exe.clone())
+        );
+        assert_eq!(
+            parse_command_exe(&format!("{exe_str} %1")),
+            Some(exe.clone())
+        );
+        assert_eq!(parse_command_exe(&exe_str), Some(exe.clone()));
+        // 指向不存在的程序：一律当「没装」
+        assert_eq!(parse_command_exe(r#""C:\nope\editor.exe" "%1""#), None);
+        assert_eq!(parse_command_exe(""), None);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
@@ -1046,17 +1112,22 @@ pub const APP_PATHS_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorApp {
-    /// 稳定标识（菜单项 id、日志用），与 [`EDITOR_CANDIDATES`] 的 `id` 一致
+    /// 稳定标识（菜单项 id、日志用）= exe 文件名小写
     pub id: String,
     /// 菜单里显示的产品名
     pub name: String,
     /// 可执行文件绝对路径（已 `is_file()` 校验）
     pub path: PathBuf,
+    /// 应用真实图标的 `data:image/png;base64,…`（批次 5.7）。
+    /// 只在 [`list_editors`]（菜单展示）时提取；open_in_editor 的白名单复探不带它。
+    /// 提不出来（无图标资源/WIC 失败）为 None，前端退回通用图标槽。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_data_url: Option<String>,
 }
 
 /// 一个候选编辑器的探测配方。
+/// （曾有 `id` 字段作菜单项标识；规则驱动探测后 id 统一取 exe 文件名小写，字段随之删除。）
 struct EditorCandidate {
-    id: &'static str,
     name: &'static str,
     /// App Paths 下的键名（首选探测方式）
     exe: &'static str,
@@ -1065,13 +1136,12 @@ struct EditorCandidate {
     well_known: &'static [(&'static str, &'static str)],
 }
 
-/// 候选表。**顺序就是菜单顺序**：VS Code 系列在前（最常用），记事本永远垫底。
-///
-/// 加一项之前先想清楚：这张表不是「所有编辑器」的目录，只是「常见到值得省用户三次点击」的那几个。
-/// 表里没有的编辑器有「其他程序…」这条出路（[`open_with_dialog`]），不会被挡在门外。
+/// 候选兜底表（2026-08-19 批次 5.7 起**不再是主来源**，主来源是系统 OpenWith 登记，
+/// 见 [`detect_editors`]）。它兜住的是「装了、但从没用系统『打开方式』打开过 .md」
+/// 的常见编辑器——这类程序不会出现在 OpenWith 登记里，但用户大概率想要。
+/// 顺序仍然有意义：兜底部分按此排列，记事本永远垫底（保证子菜单永不为空）。
 static EDITOR_CANDIDATES: [EditorCandidate; 7] = [
     EditorCandidate {
-        id: "vscode",
         name: "Visual Studio Code",
         exe: "Code.exe",
         // 用户级安装（默认）落 %LOCALAPPDATA%，System 版才在 Program Files
@@ -1082,7 +1152,6 @@ static EDITOR_CANDIDATES: [EditorCandidate; 7] = [
         ],
     },
     EditorCandidate {
-        id: "vscode-insiders",
         name: "Visual Studio Code Insiders",
         exe: "Code - Insiders.exe",
         well_known: &[
@@ -1097,7 +1166,6 @@ static EDITOR_CANDIDATES: [EditorCandidate; 7] = [
         ],
     },
     EditorCandidate {
-        id: "cursor",
         name: "Cursor",
         exe: "Cursor.exe",
         well_known: &[
@@ -1106,7 +1174,6 @@ static EDITOR_CANDIDATES: [EditorCandidate; 7] = [
         ],
     },
     EditorCandidate {
-        id: "sublime-text",
         name: "Sublime Text",
         exe: "sublime_text.exe",
         well_known: &[
@@ -1116,7 +1183,6 @@ static EDITOR_CANDIDATES: [EditorCandidate; 7] = [
         ],
     },
     EditorCandidate {
-        id: "notepad-plus-plus",
         name: "Notepad++",
         exe: "notepad++.exe",
         // 32 位版装在 Program Files (x86) 相当常见，两处都要探
@@ -1126,7 +1192,6 @@ static EDITOR_CANDIDATES: [EditorCandidate; 7] = [
         ],
     },
     EditorCandidate {
-        id: "typora",
         name: "Typora",
         exe: "Typora.exe",
         well_known: &[
@@ -1135,7 +1200,6 @@ static EDITOR_CANDIDATES: [EditorCandidate; 7] = [
         ],
     },
     EditorCandidate {
-        id: "notepad",
         name: "记事本",
         exe: "notepad.exe",
         // 兜底项：系统自带，保证子菜单永远不是空的。
@@ -1153,8 +1217,8 @@ static EDITOR_CANDIDATES: [EditorCandidate; 7] = [
 /// 比根本没有这一项更糟（DG 6.4 全局条 B）。
 #[tauri::command]
 pub async fn list_editors() -> AppResult<Vec<EditorApp>> {
-    // 注册表 + 一串 stat：都是阻塞 IO，不该占 async 运行时的工作线程
-    tauri::async_runtime::spawn_blocking(detect_editors)
+    // 注册表 + 一串 stat + 图标提取：都是阻塞 IO，不该占 async 运行时的工作线程
+    tauri::async_runtime::spawn_blocking(|| detect_editors_with(true))
         .await
         .map_err(|err| AppError::native(format!("探测本机编辑器失败：{err}")))
 }
@@ -1195,27 +1259,476 @@ pub async fn open_in_editor(editor: PathBuf, path: PathBuf) -> AppResult<()> {
     .map_err(|err| AppError::native(format!("拉起编辑器任务失败：{err}")))?
 }
 
-/// 逐个候选跑「App Paths → 众所周知位置 → 放弃」，产出实际存在的那些。
+/// 本应用自己的 exe 名主干：探测结果里必须排除自己——
+/// 「用其他编辑器打开」列出本应用，点了等于单实例把自己拉到前台，什么都没发生。
+const SELF_EXE_STEM: &str = "mdnaonao";
+
+/// HKCU 下 .md 的「打开方式」记录（Explorer 维护：OpenWithList 是用户实际用过的
+/// 程序 + MRU 顺序，OpenWithProgids 是各应用安装时登记的能力）。**只读**。
+const FILE_EXTS_MD_KEY: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.md";
+
+/// 探测「能打开 .md 的编辑器」（批次 5.7 起为**规则驱动**，不再是手写名单）：
 ///
-/// 顺序原样保留候选表的顺序（那就是菜单顺序）。
+/// 规则 = 与资源管理器「打开方式」同一数据源，检测到什么菜单就列什么：
+/// 1. **HKCU FileExts\.md\OpenWithList**（用户用系统对话框打开过 .md 的程序），
+///    按 MRUList 顺序——最常用的排最前。这也回答了「怎么增加」：
+///    用「其他程序…」选一次，Windows 记下它，下次它就自动出现在这里；
+/// 2. **OpenWithProgids**（HKCU FileExts + HKCR\.md）：各应用安装时登记的 .md 能力
+///    （装了但没用系统对话框打开过的也在此现身）；
+/// 3. [`EDITOR_CANDIDATES`] 兜底：装了却两处都没登记的常见编辑器（+记事本垫底）。
+///
+/// 三源按序合并、按路径去重、排除本应用自身。显示名走
+/// FriendlyAppName → exe 版本信息 FileDescription（系统「打开方式」同源）→ 候选表名 → 文件名。
+///
+/// 白名单复探（open_in_editor）走这个不带图标的入口——比对只看路径，
+/// 每次点菜单都抽一轮图标纯属浪费。
 fn detect_editors() -> Vec<EditorApp> {
-    let mut found = Vec::with_capacity(EDITOR_CANDIDATES.len());
+    detect_editors_with(false)
+}
+
+fn detect_editors_with(include_icons: bool) -> Vec<EditorApp> {
+    let mut found: Vec<EditorApp> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // 来源 1：OpenWithList（MRU 顺序 = 菜单顺序的最前段）
+    for token in open_with_list_mru() {
+        if token
+            .trim_end_matches(".exe")
+            .eq_ignore_ascii_case(SELF_EXE_STEM)
+        {
+            continue;
+        }
+        if let Some(path) = resolve_exe_token(&token) {
+            push_editor(&mut found, &mut seen, &token, path, include_icons);
+        }
+    }
+
+    // 来源 2：OpenWithProgids（登记过 .md 能力的应用）
+    for progid in open_with_progids() {
+        let Some(command) = progid_command(&progid) else {
+            continue;
+        };
+        if let Some(path) = parse_command_exe(&command) {
+            let token = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            push_editor(&mut found, &mut seen, &token, path, include_icons);
+        }
+    }
+
+    // 来源 3：候选兜底表（装了但没在系统里登记 .md 的常见编辑器；记事本垫底）
     for candidate in &EDITOR_CANDIDATES {
         let located =
             lookup_app_paths(candidate.exe).or_else(|| lookup_well_known(candidate.well_known));
         let Some(path) = located else {
-            tracing::debug!(editor = candidate.id, "未探测到，跳过（不猜路径）");
             continue;
         };
-        tracing::debug!(editor = candidate.id, path = %path.display(), "已探测到编辑器");
-        found.push(EditorApp {
-            id: candidate.id.to_string(),
-            name: candidate.name.to_string(),
-            path,
-        });
+        push_editor(&mut found, &mut seen, candidate.exe, path, include_icons);
     }
-    tracing::info!(count = found.len(), "编辑器探测完成");
+
+    tracing::info!(count = found.len(), "编辑器探测完成（OpenWith 规则 + 候选兜底）");
     found
+}
+
+/// 去重（按归一化全路径）+ 排除自身 + 解析显示名后入表。
+fn push_editor(
+    found: &mut Vec<EditorApp>,
+    seen: &mut std::collections::HashSet<String>,
+    exe_token: &str,
+    path: PathBuf,
+    include_icons: bool,
+) {
+    let stem_is_self = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().eq_ignore_ascii_case(SELF_EXE_STEM))
+        .unwrap_or(false);
+    if stem_is_self {
+        return;
+    }
+    let key = normalize_for_compare(&path);
+    if !seen.insert(key) {
+        return;
+    }
+    let name = display_name(&path, exe_token);
+    // id 用 exe 文件名小写：稳定、可读，且天然与去重后的条目一一对应
+    let id = path
+        .file_name()
+        .map(|file| file.to_string_lossy().to_lowercase())
+        .unwrap_or_else(|| exe_token.to_lowercase());
+    let icon_data_url = if include_icons {
+        editor_icon_data_url(&path)
+    } else {
+        None
+    };
+    tracing::debug!(editor = %name, path = %path.display(), "已探测到编辑器");
+    found.push(EditorApp {
+        id,
+        name,
+        path,
+        icon_data_url,
+    });
+}
+
+/// OpenWithList：值名是 a/b/c… 单字母，值数据是 exe 文件名，MRUList 记顺序。
+#[cfg(windows)]
+fn open_with_list_mru() -> Vec<String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    let Ok(key) = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(format!(r"{FILE_EXTS_MD_KEY}\OpenWithList"))
+    else {
+        return Vec::new();
+    };
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut mru = String::new();
+    for (name, value) in key.enum_values().flatten() {
+        let text = String::from_utf16_lossy(
+            &value
+                .bytes
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<u16>>(),
+        )
+        .trim_end_matches('\0')
+        .to_string();
+        if name.eq_ignore_ascii_case("MRUList") {
+            mru = text;
+        } else if name.len() == 1 && !text.is_empty() {
+            entries.push((name, text));
+        }
+    }
+    order_by_mru(&entries, &mru)
+}
+
+#[cfg(not(windows))]
+fn open_with_list_mru() -> Vec<String> {
+    Vec::new()
+}
+
+/// 按 MRUList（如 "cfeabd"）排序：列出的字母按序取值，没列到的追加在末尾。
+fn order_by_mru(entries: &[(String, String)], mru: &str) -> Vec<String> {
+    let mut ordered = Vec::with_capacity(entries.len());
+    for slot in mru.chars() {
+        if let Some((_, value)) = entries
+            .iter()
+            .find(|(name, _)| name.chars().next().is_some_and(|c| c == slot))
+        {
+            ordered.push(value.clone());
+        }
+    }
+    for (name, value) in entries {
+        if !mru.contains(name.chars().next().unwrap_or('\0')) {
+            ordered.push(value.clone());
+        }
+    }
+    ordered
+}
+
+/// OpenWithProgids 的值名集合（HKCU FileExts 与 HKCR\.md 两处并集，顺序 HKCU 先）。
+#[cfg(windows)]
+fn open_with_progids() -> Vec<String> {
+    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER};
+    use winreg::RegKey;
+
+    let mut result: Vec<String> = Vec::new();
+    let mut push_names = |key: winreg::RegKey| {
+        for name in key.enum_values().flatten().map(|(name, _)| name) {
+            if !name.is_empty() && !result.iter().any(|item| item.eq_ignore_ascii_case(&name)) {
+                result.push(name);
+            }
+        }
+    };
+    if let Ok(key) = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(format!(r"{FILE_EXTS_MD_KEY}\OpenWithProgids"))
+    {
+        push_names(key);
+    }
+    if let Ok(key) = RegKey::predef(HKEY_CLASSES_ROOT).open_subkey(r".md\OpenWithProgids") {
+        push_names(key);
+    }
+    result
+}
+
+#[cfg(not(windows))]
+fn open_with_progids() -> Vec<String> {
+    Vec::new()
+}
+
+/// `HKCR\Applications\{exe}\shell\open\command` 的默认值。
+#[cfg(windows)]
+fn application_command(exe: &str) -> Option<String> {
+    use winreg::enums::HKEY_CLASSES_ROOT;
+    use winreg::RegKey;
+    RegKey::predef(HKEY_CLASSES_ROOT)
+        .open_subkey(format!(r"Applications\{exe}\shell\open\command"))
+        .ok()?
+        .get_value::<String, _>("")
+        .ok()
+}
+
+#[cfg(not(windows))]
+fn application_command(_exe: &str) -> Option<String> {
+    None
+}
+
+/// `HKCR\{progid}\shell\open\command` 的默认值。
+#[cfg(windows)]
+fn progid_command(progid: &str) -> Option<String> {
+    use winreg::enums::HKEY_CLASSES_ROOT;
+    use winreg::RegKey;
+    RegKey::predef(HKEY_CLASSES_ROOT)
+        .open_subkey(format!(r"{progid}\shell\open\command"))
+        .ok()?
+        .get_value::<String, _>("")
+        .ok()
+}
+
+#[cfg(not(windows))]
+fn progid_command(_progid: &str) -> Option<String> {
+    None
+}
+
+/// 把 OpenWithList 里的 exe 文件名解析成绝对路径：
+/// Applications 的 open command（安装器登记的首选）→ App Paths。两处都查不到就放弃。
+fn resolve_exe_token(exe: &str) -> Option<PathBuf> {
+    if let Some(command) = application_command(exe) {
+        if let Some(path) = parse_command_exe(&command) {
+            return Some(path);
+        }
+    }
+    lookup_app_paths(exe)
+}
+
+/// 从 `"C:\x y\a.exe" "%1"` 或 `C:\x y\a.exe %1` 里取出 exe 路径（**存在性校验**）。
+///
+/// 未加引号且路径带空格的历史写法：从右往左逐个空格断开试 `is_file`，
+/// 第一个存在的前缀即答案（`C:\Program Files\X\y.exe %1` 会先试全串再试去掉 %1 的前缀）。
+fn parse_command_exe(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        let end = rest.find('"')?;
+        let path = PathBuf::from(rest[..end].trim());
+        return path.is_file().then_some(path);
+    }
+    let mut candidate = trimmed;
+    loop {
+        let path = Path::new(candidate);
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+        let cut = candidate.rfind(' ')?;
+        candidate = candidate[..cut].trim_end();
+        if candidate.is_empty() {
+            return None;
+        }
+    }
+}
+
+/// 显示名解析链（与系统「打开方式」同一取向）：
+/// FriendlyAppName → exe 版本信息 FileDescription → 候选表的产品名 → exe 文件名主干。
+fn display_name(path: &Path, exe_token: &str) -> String {
+    if let Some(friendly) = friendly_app_name(exe_token) {
+        return friendly;
+    }
+    if let Some(description) = file_description(path) {
+        return description;
+    }
+    if let Some(candidate) = EDITOR_CANDIDATES
+        .iter()
+        .find(|candidate| candidate.exe.eq_ignore_ascii_case(exe_token))
+    {
+        return candidate.name.to_string();
+    }
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| exe_token.to_string())
+}
+
+/// `HKCR\Applications\{exe}\FriendlyAppName`（`@dll,-id` 形式的间接串直接放弃——
+/// 解析它要 SHLoadIndirectString，版本信息链已经够用，不为边角多拉一个 API）。
+#[cfg(windows)]
+fn friendly_app_name(exe: &str) -> Option<String> {
+    use winreg::enums::HKEY_CLASSES_ROOT;
+    use winreg::RegKey;
+    let raw = RegKey::predef(HKEY_CLASSES_ROOT)
+        .open_subkey(format!(r"Applications\{exe}"))
+        .ok()?
+        .get_value::<String, _>("FriendlyAppName")
+        .ok()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty() && !trimmed.starts_with('@')).then(|| trimmed.to_string())
+}
+
+#[cfg(not(windows))]
+fn friendly_app_name(_exe: &str) -> Option<String> {
+    None
+}
+
+/// exe 版本信息里的 FileDescription（「打开方式」列表显示名的来源）。
+/// 语言取 \VarFileInfo\Translation 的第一组，取不到退回美英 0409/04B0。
+#[cfg(windows)]
+fn file_description(path: &Path) -> Option<String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+
+    let wide = HSTRING::from(path.as_os_str());
+    let size = unsafe { GetFileVersionInfoSizeW(&wide, None) };
+    if size == 0 {
+        return None;
+    }
+    let mut buffer = vec![0u8; size as usize];
+    unsafe { GetFileVersionInfoW(&wide, None, size, buffer.as_mut_ptr().cast()) }.ok()?;
+
+    let mut value: *mut core::ffi::c_void = std::ptr::null_mut();
+    let mut len: u32 = 0;
+    let translation = unsafe {
+        VerQueryValueW(
+            buffer.as_ptr().cast(),
+            &HSTRING::from(r"\VarFileInfo\Translation"),
+            &mut value,
+            &mut len,
+        )
+    };
+    let (lang, codepage) = if translation.as_bool() && len >= 4 && !value.is_null() {
+        let words = unsafe { std::slice::from_raw_parts(value.cast::<u16>(), 2) };
+        (words[0], words[1])
+    } else {
+        (0x0409, 0x04B0)
+    };
+
+    let query = format!(r"\StringFileInfo\{lang:04X}{codepage:04X}\FileDescription");
+    let mut text_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
+    let mut text_len: u32 = 0;
+    let ok = unsafe {
+        VerQueryValueW(
+            buffer.as_ptr().cast(),
+            &HSTRING::from(query.as_str()),
+            &mut text_ptr,
+            &mut text_len,
+        )
+    };
+    if !ok.as_bool() || text_ptr.is_null() || text_len == 0 {
+        return None;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(text_ptr.cast::<u16>(), text_len as usize) };
+    let text = String::from_utf16_lossy(slice)
+        .trim_end_matches('\0')
+        .trim()
+        .to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+#[cfg(not(windows))]
+fn file_description(_path: &Path) -> Option<String> {
+    None
+}
+
+/// 应用真实图标 → `data:image/png;base64,…`（批次 5.7，用户点名要系统同款图标）。
+///
+/// 链路全部是 Windows 自带能力（红线 12：零新 crate）：
+/// `SHGetFileInfoW` 取 32px HICON（16px 槽在 150% DPI 下用 32px 源更锐）→
+/// WIC `CreateBitmapFromHICON` → WIC PNG 编码器写进内存流 → 自家 base64。
+/// 任何一步失败都回 None：菜单退回空图标槽，绝不因图标毁掉整个列表。
+#[cfg(windows)]
+fn editor_icon_data_url(path: &Path) -> Option<String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Graphics::Imaging::{
+        CLSID_WICImagingFactory, GUID_ContainerFormatPng, IWICBitmapFrameEncode,
+        IWICImagingFactory, WICBitmapEncoderNoCache,
+    };
+    use windows::Win32::System::Com::StructuredStorage::{
+        CreateStreamOnHGlobal, GetHGlobalFromStream, IPropertyBag2,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+    use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+    // spawn_blocking 线程不保证初始化过 COM；S_FALSE（已初始化）也要配对 CoUninitialize，
+    // RPC_E_CHANGED_MODE（线程已是 MTA）则继续用现成的，不配对
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let must_uninit = com.is_ok();
+
+    let result = (|| -> Option<String> {
+        let mut info = SHFILEINFOW::default();
+        let wide = HSTRING::from(path.as_os_str());
+        let got = unsafe {
+            SHGetFileInfoW(
+                &wide,
+                Default::default(),
+                Some(&mut info),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON,
+            )
+        };
+        if got == 0 || info.hIcon.is_invalid() {
+            return None;
+        }
+
+        let encoded = (|| -> Option<Vec<u8>> {
+            let factory: IWICImagingFactory =
+                unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
+                    .ok()?;
+            let bitmap = unsafe { factory.CreateBitmapFromHICON(info.hIcon) }.ok()?;
+            let stream =
+                unsafe { CreateStreamOnHGlobal(windows::Win32::Foundation::HGLOBAL::default(), true) }
+                    .ok()?;
+            let encoder =
+                unsafe { factory.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null()) }.ok()?;
+            unsafe { encoder.Initialize(&stream, WICBitmapEncoderNoCache) }.ok()?;
+
+            let mut frame: Option<IWICBitmapFrameEncode> = None;
+            let mut options: Option<IPropertyBag2> = None;
+            unsafe { encoder.CreateNewFrame(&mut frame, &mut options) }.ok()?;
+            let frame = frame?;
+            unsafe { frame.Initialize(options.as_ref()) }.ok()?;
+            unsafe { frame.WriteSource(&bitmap, std::ptr::null()) }.ok()?;
+            unsafe { frame.Commit() }.ok()?;
+            unsafe { encoder.Commit() }.ok()?;
+
+            let hglobal = unsafe { GetHGlobalFromStream(&stream) }.ok()?;
+            let size = unsafe { GlobalSize(hglobal) };
+            if size == 0 {
+                return None;
+            }
+            let locked = unsafe { GlobalLock(hglobal) };
+            if locked.is_null() {
+                return None;
+            }
+            let bytes =
+                unsafe { std::slice::from_raw_parts(locked.cast::<u8>(), size) }.to_vec();
+            let _ = unsafe { GlobalUnlock(hglobal) };
+            Some(bytes)
+        })();
+
+        let _ = unsafe { DestroyIcon(info.hIcon) };
+        let png = encoded?;
+        Some(format!(
+            "data:image/png;base64,{}",
+            crate::export::encode_base64(&png)
+        ))
+    })();
+
+    if must_uninit {
+        unsafe { CoUninitialize() };
+    }
+    result
+}
+
+#[cfg(not(windows))]
+fn editor_icon_data_url(_path: &Path) -> Option<String> {
+    None
 }
 
 /// 读 `App Paths\<exe>` 的默认值：**HKCU 优先，其次 HKLM**，最后补一次 32 位视图。

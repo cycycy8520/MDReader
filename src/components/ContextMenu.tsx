@@ -7,13 +7,21 @@
  * （与 UI 分离，便于逐行对拍 UPGRADE_PLAN 附录 A），动作实现在 App.tsx。
  *
  * 行为契约（附录 B 的结论：抄 Radix ContextMenu 的行为语义，UI 自写贴本项目 Token）：
- *   位置   以鼠标点为锚点，间隙 4px；超出右/下边缘翻到另一侧，再夹回视口内（绝不被裁切）；
+ *   位置   根层以鼠标点为锚点，间隙 4px；超出右/下边缘翻到另一侧，再夹回视口内（绝不被裁切）；
  *          菜单高于视口时自身滚动（`max-h` + `overflow-y`），仍然不裁切
  *   关闭   点条目后 / 点外部 / Esc / 窗口 blur / 外部滚动 / resize
  *   键盘   ↑↓ 移动（循环）、Home/End 首末项、Enter 触发（走 button 原生激活）、
  *          → 展开子菜单、← 收起子菜单并归还焦点、Esc 关闭整棵、Tab 在本级内打转（焦点陷阱）；
  *          打开时焦点进第一项，关闭后归还触发元素
- *   子菜单 hover 或 → 展开（hover 展开不抢焦点，键盘展开才把焦点送进去），同样做边界翻转
+ *   子菜单 hover 或 → 展开（hover 展开不抢焦点，键盘展开才把焦点送进去）。
+ *          **贴合与手感对齐系统菜单**（批次 5.6，用户 2026-08-19 点名对标 Win11）：
+ *          · 定位：压在父菜单**卡**边缘上重叠 4px（不是贴菜单项留缝），顶边与父项行顶
+ *            精确对齐（补回卡 padding 与描边）；右侧放不下翻到左侧，同样重叠；
+ *          · 宽限：指针滑到兄弟项**不立刻**收起子菜单，起 280ms 宽限计时——期间进入
+ *            子菜单面板或折回父项即取消。没有宽限的话，从父项斜滑向子菜单必然
+ *            路过下一行，子菜单在够到之前就被关了（用户只能退化成点击）；
+ *          · 父项在子菜单展开期间保持 bg-hover 常亮（看得出子菜单从哪长出来）；
+ *          · 键盘不吃宽限：↑↓ 离开父项立刻收起（Win11 同款）。
  *   置灰项 aria-disabled + opacity-40 + cursor-not-allowed + 不响应 hover 背景；
  *          点了**什么都不发生**（不报错、不关菜单），hover 用 title 说明「开发中」
  *
@@ -71,6 +79,11 @@ interface MenuNodeBase {
   readonly label: string;
   readonly icon?: MenuIconName;
   /**
+   * 应用真实图标（`data:image/png;base64,…`，批次 5.7 编辑器子菜单用）。
+   * 与 `icon` 同槽渲染、优先级更高：有真图标就不画手绘图形。
+   */
+  readonly iconUrl?: string;
+  /**
    * 条件不满足（如无选区、无当前文档）→ 置灰但**不**提示「开发中」。
    * 与 pending 的区别是：disabled 是"此刻不可用"，pending 是"还没做"。
    */
@@ -106,19 +119,31 @@ export type MenuNode = MenuActionItem | MenuSubmenuItem | MenuSeparator;
 
 /* ── 几何：边界翻转 ─────────────────────────────────────────────── */
 
-/** 触发点（或父项）与菜单之间的间隙 */
+/** 触发点与根菜单之间的间隙 */
 const ANCHOR_GAP = 4;
 /** 菜单与窗口边缘的最小留白 */
 const VIEWPORT_MARGIN = 8;
 /** 菜单卡自身的 padding（p-1）：子菜单纵向对齐父项时要把它补回去 */
 const CARD_PADDING = 4;
+/** 菜单卡描边宽度（border）：纵向对齐同样要补 */
+const CARD_BORDER = 1;
+/** 子菜单压在父菜单卡边缘上的重叠量（Win11 同款；留缝会变成两座分离的岛） */
+const SUBMENU_OVERLAP = 4;
+/**
+ * 悬停宽限（批次 5.6）：指针滑到兄弟项后延迟这么久才真正收起子菜单。
+ * 取值参考 Radix（300）与 Win11（约 400）的下沿——太长会显得菜单"反应迟钝"。
+ */
+const SUBMENU_CLOSE_GRACE_MS = 280;
 
 interface Point {
   readonly x: number;
   readonly y: number;
 }
 
-/** 只取需要的四个边，避免把 DOMRect 整个搬进 state */
+/**
+ * 子菜单锚点：横向取**父菜单卡**的左右缘（重叠定位的基准），
+ * 纵向取**父项行**的顶边（首行对齐的基准）。只取需要的三个数，不搬整个 DOMRect。
+ */
 interface AnchorRect {
   readonly left: number;
   readonly top: number;
@@ -160,7 +185,11 @@ function placeAtPoint(
   };
 }
 
-/** 子菜单：贴父项右侧展开，放不下翻到左侧；纵向与父项首行对齐后夹回视口 */
+/**
+ * 子菜单：压在父菜单卡右缘上（重叠 SUBMENU_OVERLAP），放不下翻到左缘同样重叠；
+ * 纵向让子菜单**第一行**与父项行顶精确对齐（把卡 padding 与描边补回去）后夹回视口。
+ * 重叠而不是留缝，是「子菜单长在父菜单上」观感的全部来源（批次 5.6，对标 Win11）。
+ */
 function placeBesideRect(
   rect: AnchorRect,
   width: number,
@@ -168,14 +197,14 @@ function placeBesideRect(
   viewWidth: number,
   viewHeight: number,
 ): Position {
-  let left = rect.right + ANCHOR_GAP;
+  let left = rect.right - SUBMENU_OVERLAP;
   if (left + width > viewWidth - VIEWPORT_MARGIN) {
-    left = rect.left - ANCHOR_GAP - width;
+    left = rect.left - width + SUBMENU_OVERLAP;
   }
   return {
     left: clamp(left, VIEWPORT_MARGIN, viewWidth - VIEWPORT_MARGIN - width),
     top: clamp(
-      rect.top - CARD_PADDING,
+      rect.top - CARD_PADDING - CARD_BORDER,
       VIEWPORT_MARGIN,
       viewHeight - VIEWPORT_MARGIN - height,
     ),
@@ -403,6 +432,11 @@ interface MenuPanelProps {
   readonly onCloseAll: () => void;
   /** ← 键：收起本级并把焦点还给父项；根层为 null */
   readonly onCollapse: (() => void) | null;
+  /**
+   * 指针进入本面板时通知父级「别关我」（取消宽限计时）。
+   * 根层没有父级，为 null；子菜单不挂这个就够不着宽限机制。
+   */
+  readonly onKeepAlive: (() => void) | null;
 }
 
 function MenuPanel({
@@ -414,6 +448,7 @@ function MenuPanel({
   autoFocus,
   onCloseAll,
   onCollapse,
+  onKeepAlive,
 }: MenuPanelProps) {
   const cardRef = useRef<HTMLDivElement>(null);
   const buttonRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -422,6 +457,26 @@ function MenuPanel({
   const focusedOnce = useRef(false);
   const [position, setPosition] = useState<Position | null>(null);
   const [submenu, setSubmenu] = useState<OpenSubmenu | null>(null);
+  /** 宽限计时器（批次 5.6）：滑到兄弟项 → 延迟收起子菜单；进入子菜单/折回父项 → 取消 */
+  const graceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelScheduledClose = useCallback(() => {
+    if (graceTimer.current !== null) {
+      clearTimeout(graceTimer.current);
+      graceTimer.current = null;
+    }
+  }, []);
+
+  const scheduleSubmenuClose = useCallback(() => {
+    cancelScheduledClose();
+    graceTimer.current = setTimeout(() => {
+      graceTimer.current = null;
+      setSubmenu(null);
+    }, SUBMENU_CLOSE_GRACE_MS);
+  }, [cancelScheduledClose]);
+
+  // 卸载时清掉在途计时器：整棵菜单关闭后不许有幽灵 setSubmenu 落在已卸载组件上
+  useEffect(() => cancelScheduledClose, [cancelScheduledClose]);
 
   /** 可聚焦项的下标表（分隔线不进）：置灰项**保留**在表内——用户要能走到它、读到「开发中」 */
   const focusables = useMemo(
@@ -496,18 +551,26 @@ function MenuPanel({
   const openSubmenu = useCallback(
     (index: number, node: MenuSubmenuItem, viaKeyboard: boolean) => {
       const button = buttonRefs.current[index];
-      if (button === null || button === undefined) {
+      const card = cardRef.current;
+      if (button === null || button === undefined || card === null) {
         return;
       }
-      const box = button.getBoundingClientRect();
-      const rect: AnchorRect = { left: box.left, top: box.top, right: box.right };
+      cancelScheduledClose();
+      const buttonBox = button.getBoundingClientRect();
+      const cardBox = card.getBoundingClientRect();
+      // 横向锚定**卡**缘（重叠定位），纵向锚定**行**顶（首行对齐）——见 AnchorRect 注释
+      const rect: AnchorRect = {
+        left: cardBox.left,
+        top: buttonBox.top,
+        right: cardBox.right,
+      };
       setSubmenu((current) =>
         current !== null && current.index === index && !viaKeyboard
           ? current
           : { index, node, rect, viaKeyboard },
       );
     },
-    [],
+    [cancelScheduledClose],
   );
 
   const collapseSubmenu = useCallback(() => {
@@ -549,12 +612,14 @@ function MenuPanel({
       activeIndex.current = index;
       buttonRefs.current[index]?.focus({ preventScroll: true });
       if (node.kind === "submenu" && node.disabled !== true && node.pending !== true) {
+        // 折回已展开的父项 = 取消在途的宽限关闭（openSubmenu 内已做）
         openSubmenu(index, node, false);
         return;
       }
-      setSubmenu(null);
+      // 滑到兄弟项**不立刻**收起——没有宽限，斜滑向子菜单的路径必然被下一行打断
+      scheduleSubmenuClose();
     },
-    [items, openSubmenu],
+    [items, openSubmenu, scheduleSubmenuClose],
   );
 
   const handleKeyDown = useCallback(
@@ -625,6 +690,8 @@ function MenuPanel({
         data-context-menu=""
         tabIndex={-1}
         onKeyDown={handleKeyDown}
+        // 子菜单面板：指针进来即通知父级取消宽限关闭（本面板就是被宽限保护的对象）
+        onPointerEnter={onKeepAlive ?? undefined}
         // 本级自身滚动（菜单超高时）会让父项挪位，已展开的子菜单会停在旧坐标上，
         // 干脆收起——重新 hover 一次就是新位置，比跟着重算便宜也更稳
         onScroll={() => {
@@ -696,9 +763,13 @@ function MenuPanel({
                   : danger
                     ? "hover:bg-hover-danger"
                     : "hover:bg-hover"
+              } ${
+                // 子菜单展开期间父项保持常亮（批次 5.6）：指针已进入子菜单、hover 态
+                // 早就不在了，没有这条就看不出子菜单从哪长出来
+                isSubmenu && submenu?.index === index ? "bg-hover" : ""
               }`}
             >
-              {/* 前置图标槽恒占 16px：单选组用它放对勾，普通项放图标，空着也保持左缘对齐 */}
+              {/* 前置图标槽恒占 16px：单选组放对勾 > 应用真图标 > 手绘图形，空着也保持左缘对齐 */}
               <span
                 aria-hidden
                 className="flex h-4 w-4 shrink-0 items-center justify-center text-tertiary"
@@ -707,6 +778,14 @@ function MenuPanel({
                   checked ? (
                     <IconCheck />
                   ) : null
+                ) : node.iconUrl !== undefined ? (
+                  // 32px 源渲染在 16px 槽：150% DPI 下仍然锐利；alt 留空 + aria-hidden，纯装饰
+                  <img
+                    src={node.iconUrl}
+                    alt=""
+                    draggable={false}
+                    className="h-4 w-4 select-none"
+                  />
                 ) : node.icon === undefined ? null : (
                   <MenuIcon name={node.icon} />
                 )}
@@ -741,6 +820,7 @@ function MenuPanel({
               autoFocus={submenu.viaKeyboard}
               onCloseAll={onCloseAll}
               onCollapse={collapseSubmenu}
+              onKeepAlive={cancelScheduledClose}
             />,
             portalTarget,
           )}
@@ -833,6 +913,7 @@ export function ContextMenu({ anchor, items, label, onClose }: ContextMenuProps)
         autoFocus
         onCloseAll={onClose}
         onCollapse={null}
+        onKeepAlive={null}
       />
     </div>
   );

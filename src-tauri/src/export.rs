@@ -981,6 +981,33 @@ fn base64_value(byte: u8) -> Option<u8> {
 /// `pub(crate)` 而不是私有：`capture.rs` 解 CDP 截图返回体要用同一套逻辑。
 /// 那边一度各自持有一份逐字相同的副本 —— 两份实现意味着将来只修其中一份，
 /// 而这种「解码差一位」的缺陷在产物上表现为整张图/整份 PDF 损坏，极难倒查。
+/// base64 编码（标准字母表 + `=` 填充）。与下方解码器同居一处、同一份字母表——
+/// 编码/解码分家在两个文件里，字母表改一处漏一处的事故只是时间问题。
+/// 当前唯一用户：shell_integ 的编辑器图标 data URI（几 KB 级，性能无虞）。
+pub(crate) fn encode_base64(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(triple >> 18) as usize & 0x3F] as char);
+        out.push(TABLE[(triple >> 12) as usize & 0x3F] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(triple >> 6) as usize & 0x3F] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[triple as usize & 0x3F] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 pub(crate) fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
     // 4 个字符出 3 字节，先按上界预分配，避免几 MB 的 PDF 反复扩容
     let mut out = Vec::with_capacity(input.len() / 4 * 3 + 3);

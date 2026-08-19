@@ -4307,6 +4307,9 @@ export default function App() {
       window.removeEventListener("contextmenu", onContextMenu);
     };
   }, [
+    // editors 必须在依赖里：探测是异步的，挂载时闭包捕到的是空表——漏掉它的话
+    // 「用其他编辑器 ▸」永远只剩「其他程序…」（2026-08-19 用户实测抓到的老 bug）
+    editors,
     focusReading,
     openDocumentAt,
     openExportDialog,

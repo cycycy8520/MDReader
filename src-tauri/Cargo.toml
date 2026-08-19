@@ -76,6 +76,18 @@ webview2-com = "=0.38.2"
 windows = { version = "=0.61.3", features = [
   "Win32_Foundation",
   "Win32_System_Com",
+  # 版本信息 API（GetFileVersionInfo/VerQueryValue）：读 exe 的 FileDescription 作
+  # 「用其他编辑器 ▸」的显示名——这正是系统「打开方式」列表显示名的同一来源。
+  # 同一 crate 追加特性，无新依赖（红线 12 的字面与本意都不触）。
+  "Win32_Storage_FileSystem",
+  # 编辑器真实图标（批次 5.7，用户点名）：SHGetFileInfo 取 HICON → WIC 编成 PNG。
+  # 全部是 Windows 自带能力，零新 crate；PNG 编码交给系统 WIC，不引 image/png 库。
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Graphics_Imaging",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Memory",
+  "Win32_System_Com_StructuredStorage",
 ] }
 windows-core = "=0.61.2"
 

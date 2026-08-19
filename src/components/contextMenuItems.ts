@@ -43,12 +43,14 @@ import type { ExportKind } from "./ExportDialog";
  * **刻意不进 i18n**：产品名不是可译文案，翻它只会翻错。
  */
 export interface EditorApp {
-  /** 稳定标识，用来拼菜单项 id */
+  /** 稳定标识（exe 文件名小写），用来拼菜单项 id */
   readonly id: string;
   /** 菜单里显示的产品名 */
   readonly name: string;
   /** 可执行文件绝对路径（后端已 is_file 校验过） */
   readonly path: string;
+  /** 应用真实图标（`data:image/png;base64,…`）；后端提取失败时缺席，槽位留空 */
+  readonly iconDataUrl?: string;
 }
 
 export interface ContextMenuActions {
@@ -431,6 +433,8 @@ function openGroup(input: DocumentMenuInput): MenuNode[] {
             id: `open-with-editor-${editor.id}`,
             // 产品名来自后端探测结果，不进 i18n（翻译产品名只会翻错）
             label: editor.name,
+            // 应用真实图标（批次 5.7）：与系统「打开方式」同款观感
+            iconUrl: editor.iconDataUrl,
             disabled: documentPath === null,
             run:
               documentPath === null
