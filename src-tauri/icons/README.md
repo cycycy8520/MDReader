@@ -22,7 +22,8 @@ pnpm tauri icon path/to/source-1024.png
 | `32x32.png` | 小尺寸位图 |
 | `128x128.png` | 常规位图 |
 | `128x128@2x.png` | 高 DPI 位图（实际 256x256） |
-| `icon.ico` | **Windows 必需**：exe 图标、安装器图标、文件关联图标；内含 16/32/48/64/256 多尺寸 |
+| `icon.ico` | **Windows 必需**：exe 图标、安装器图标、任务栏图标；内含 16/32/48/64/256 多尺寸 |
+| `md-file.ico` | **.md 文件关联专用图标**（2026-08-20 起与应用图标分离：蓝色文件形 + 白狗 + MD 字样，源图 `_source-md-file-icon.png`）。经 `tauri.conf.json` 的 `bundle.resources` 随装，`nsis-hooks.nsh` 的 POSTINSTALL 把 ProgID `Markdown` 的 DefaultIcon 指向它。重生成：`pnpm tauri icon -o <临时目录> 源图.png` 后取其中 icon.ico 改名放入 |
 
 ## 注意
 

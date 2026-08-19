@@ -24,11 +24,11 @@
 ; 否则安装后右键菜单会显示乱码。
 ; ============================================================================
 
-; 自家 ProgID 前缀。
-; TODO(M2)：`tauri build` 后打开 target/release/nsis/*/installer.nsi，
-; 核对 bundler 为 fileAssociations 生成的 ProgID 实际名称并回填此处，
-; 确保额外动词挂在同一个 ProgID 之下（挂错 ProgID = 右键菜单不出现）。
-!define MDV_PROGID "MDNaonao.md"
+; 自家 ProgID。2026-08-20 已核实回填（TODO 完成）：
+; installer.nsi 的 APP_ASSOCIATE 第二参即 ProgID = fileAssociations 的 name 字段
+; （"Markdown"），装机注册表 HKCU\Software\Classes\Markdown\shell\open\command
+; 指向本应用亦为佐证。额外动词与 DefaultIcon 都必须挂在它下面。
+!define MDV_PROGID "Markdown"
 
 ; 动词注册的根位置。installMode = currentUser，因此写 HKCU\Software\Classes。
 ; TODO(M2)：若将来改为 perMachine / both，需按 $MultiUser.InstallMode 分支切到 HKLM。
@@ -61,6 +61,12 @@
 ;   WriteRegStr HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDNaonao.ToHtml\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" --action to-html "%1"'
 ; ----------------------------------------------------------------------------
 !macro NSIS_HOOK_POSTINSTALL
+  ; .md 文件图标（2026-08-20 用户指定：文件图标与应用图标分离）：
+  ; bundler 的 APP_ASSOCIATE 把 DefaultIcon 写成 "$INSTDIR\exe,0"（= 应用图标），
+  ; 本钩子跑在其后，用附带的专用 ico 覆盖同一键——只动自家 ProgID（铁律 2），
+  ; 卸载时 PREUNINSTALL 显式删除 + bundler 的 APP_UNASSOCIATE 整体移除双保险。
+  ; ico 由 bundle.resources 落到 $INSTDIR\icons\md-file.ico。
+  WriteRegStr HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\DefaultIcon" "" '"$INSTDIR\icons\md-file.ico",0'
   ; TODO(M2)：在此写入上述额外动词键。
   !insertmacro MDVRefreshShell
 !macroend
@@ -73,7 +79,10 @@
 ; 删除清单必须与 POSTINSTALL 的写入清单一一对应。
 ; ----------------------------------------------------------------------------
 !macro NSIS_HOOK_PREUNINSTALL
-  ; TODO(M2)：与 POSTINSTALL 一一对应地删除，例如：
+  ; 与 POSTINSTALL 一一对应（铁律 3）：删掉自己写的 DefaultIcon 覆盖。
+  ; bundler 的 APP_UNASSOCIATE 随后会整体移除 ProgID，这里是显式对账不是依赖它。
+  DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\DefaultIcon"
+  ; TODO(M2)：与 POSTINSTALL 一一对应地删除额外动词，例如：
   ;   DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDNaonao.ToHtml"
   ;   DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDNaonao.ToPdf"
   ;   DeleteRegKey HKCU "${MDV_CLASSES_ROOT}\${MDV_PROGID}\shell\MDNaonao.ImportObsidian"

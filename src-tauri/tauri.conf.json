@@ -95,6 +95,7 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
+    "resources": ["icons/md-file.ico"],
     "fileAssociations": [
       {
         "ext": ["md", "markdown", "mdown", "mkd", "mkdn"],

@@ -819,6 +819,7 @@ Windows 上缺少一个"又轻又快、开箱即用、与国内办公生态（�
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v0.6.4 | 2026-08-20 | **.md 文件关联图标与应用图标分离**（用户指定）：新增专用 `icons/md-file.ico`（蓝色文件形 + 白狗 + MD），经 bundle.resources 随装、NSIS POSTINSTALL 钩子覆盖 ProgID `Markdown` 的 DefaultIcon（PREUNINSTALL 对账删除，铁律 2/3 全守）；顺带完成 nsis-hooks.nsh 里挂了两个里程碑的 TODO——ProgID 实名已从 installer.nsi 与装机注册表双重核实为 `Markdown` 并回填 |
 | v0.6.3 | 2026-08-20 | 应用图标定稿：**黑底白色金毛头像线稿**（用户提供的生成图，1024 源图存 `src-tauri/icons/_source-app-icon.png`，`pnpm tauri icon` 全套重生成）——取代 5.8 原拟「M↓ 符号」方案与同日短暂使用的实照方案（实照在 16/32px 关联图标档糊成色块，线稿高对比不糊）；icons/README 同步改写。**打包纪律补一条**：图标由 build 脚本嵌入 exe 且 cargo 不追踪 icons 目录，换图标后必须 `cargo clean -p mdnaonao --release` 再打包，否则成品还是旧图标（已实际踩坑一次） |
 | v0.6.2 | 2026-08-19 | 「用其他编辑器 ▸」改**规则驱动**（用户点名「检测到什么出现什么」）：与资源管理器「打开方式」同数据源（OpenWithList MRU ∪ OpenWithProgids），原候选表降级为兜底；显示名走系统同源解析链（FriendlyAppName→版本信息 FileDescription）；增加编辑器 = 用「其他程序…」选一次即自动出现；条目带应用真实图标（SHGetFileInfo→WIC PNG→data URI，windows crate 追加 Shell/Imaging 等特性，零新 crate）。附带修复批次 3 遗留 bug（探测结果因 effect 依赖缺失从未进过菜单）与子菜单手感对齐 Win11（悬停宽限/重叠贴合/父项常亮，UP 5.6/5.7） |
 | v0.6.1 | 2026-08-19 | 入口顺手化（用户当日反馈）：① 顶栏撤下导出/分享钮（与正文右键完全重复；导出/分享/打印一律走右键与 Ctrl+P），5.2 顶栏行同步修订；② 顶栏新增「打开文件夹」按钮；③ 左栏空白区新增右键菜单（附录 A.5：打开文件 / 打开文件夹 ▸ 含最近文件夹）；5.3.1 入口条同步扩充 |
