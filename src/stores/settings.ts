@@ -1,6 +1,6 @@
 /**
- * 用户设置 store —— 对应 DG 7.3「settings.json」（主题、字号、缩放、导出偏好、
- * 代码折行、frontmatter 显示、大纲钉住态、左栏宽度/折叠、窗口几何）。
+ * 用户设置 store —— 对应 DG 7.3「settings.json」（主题、字号、缩放、正文列宽、
+ * 导出偏好、代码折行、frontmatter 显示、大纲钉住态、左栏宽度/折叠、窗口几何）。
  *
  * 【契约】本 store 的持久化字段 = `types/Settings` = Rust `settings::Settings`，
  * wire 格式 camelCase，三处必须逐字段一致（审计 2026-08-18 blocker：字段名对不上
@@ -17,8 +17,10 @@ import type {
   ExportHtmlMode,
   FrontmatterDisplay,
   ReadingStyleVars,
+  ReadingWidth,
   ResolvedTheme,
   Settings,
+  SidebarView,
   Theme,
   WindowGeometry,
 } from "../types";
@@ -40,12 +42,31 @@ export const FONT_SIZE_MAX = 20;
 export const FONT_SIZE_DEFAULT = 16;
 
 /**
+ * 正文字号可选档位（设置页逐档列出，14–20 全档）。
+ *
+ * 刻意是「每 px 一档」而不是加减按钮：范围只有 7 档，一次点击直达比连点加号快，
+ * 也不会出现「按住加号冲过头再退回来」这种在只读查看器里毫无必要的操作。
+ */
+export const FONT_SIZE_PRESETS: readonly number[] = [14, 15, 16, 17, 18, 19, 20];
+
+/**
+ * 正文列宽三档（值即 CSS 的 `[data-reading-width="…"]`，见 styles/markdown.css）。
+ * 默认 fluid：正文宽度跟随窗口，是 MPE 的行为；另外两档是可选的固定列宽。
+ */
+export const READING_WIDTHS: readonly ReadingWidth[] = ["fluid", "medium", "wide"];
+
+/**
  * 左栏宽度（DG 5.2）。此前 uiState（200–360）、tokens.css（264–420）、Rust（260）
  * 三处打架，本次按 UPGRADE_PLAN 4.3 与全局契约统一为 264–420，默认 280（= tokens.css）。
  */
 export const SIDEBAR_WIDTH_MIN = 264;
 export const SIDEBAR_WIDTH_MAX = 420;
 export const SIDEBAR_WIDTH_DEFAULT = 280;
+
+/** 最近文件夹上限（F20，DG 5.3.1；与 Rust `RECENT_FOLDERS_LIMIT` 一致） */
+export const RECENT_FOLDERS_LIMIT = 12;
+/** 展开目录集上限（脏数据防御；与 Rust `FOLDER_EXPANDED_LIMIT` 一致） */
+export const FOLDER_EXPANDED_LIMIT = 512;
 
 /** 窗口默认几何：x/y 为 null 表示无记录，由 Rust 侧回落主屏居中 */
 export const DEFAULT_WINDOW_GEOMETRY: WindowGeometry = {
@@ -60,12 +81,17 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   fontSize: FONT_SIZE_DEFAULT,
   zoomPercent: ZOOM_DEFAULT,
+  readingWidth: "fluid",
   codeWrap: false,
   frontmatterDisplay: "card",
   outlinePinned: false,
   sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
   sidebarCollapsed: false,
   htmlExportMode: "single-file",
+  sidebarView: "recent",
+  folderRoot: null,
+  folderExpanded: [],
+  recentFolders: [],
   window: DEFAULT_WINDOW_GEOMETRY,
 };
 
@@ -84,6 +110,8 @@ interface SettingsState extends Settings {
   /** Ctrl+滚轮 / Ctrl+= / Ctrl+-：在当前值上增减（内部已钳位） */
   nudgeZoom: (delta: number) => void;
   resetZoom: () => void;
+  /** 正文列宽三态（设置页）；非法值不会到这里——UI 只给三个档位 */
+  setReadingWidth: (width: ReadingWidth) => void;
   setCodeWrap: (wrap: boolean) => void;
   setFrontmatterDisplay: (display: FrontmatterDisplay) => void;
   setOutlinePinned: (pinned: boolean) => void;
@@ -91,6 +119,16 @@ interface SettingsState extends Settings {
   setSidebarCollapsed: (collapsed: boolean) => void;
   setWindowGeometry: (geometry: WindowGeometry) => void;
   setHtmlExportMode: (mode: ExportHtmlMode) => void;
+  /** F20：切换左栏视图；folderRoot 为 null 时强制回 recent（不变式与 Rust 一致） */
+  setSidebarView: (view: SidebarView) => void;
+  /**
+   * F20：挂载/卸载文件夹根。挂载时自动切树视图、清空展开集（新根的展开态从零开始）
+   * 并登记进最近文件夹；null = 卸载，视图退回 recent。
+   */
+  setFolderRoot: (root: string | null) => void;
+  setFolderExpanded: (paths: string[]) => void;
+  /** F20：从最近文件夹列表移除一条（失效路径显示时剔除用） */
+  removeRecentFolder: (path: string) => void;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -102,6 +140,7 @@ function clamp(value: number, min: number, max: number): number {
 const THEMES: readonly Theme[] = ["system", "light", "dark"];
 const FRONTMATTER_DISPLAYS: readonly FrontmatterDisplay[] = ["card", "hidden", "raw"];
 const HTML_EXPORT_MODES: readonly ExportHtmlMode[] = ["single-file", "with-assets"];
+const SIDEBAR_VIEWS: readonly SidebarView[] = ["recent", "tree"];
 
 /** 旧版本（≤ 2026-08-18）写下的字段名，读到就映射到新名并回写一次 */
 const LEGACY_KEYS = ["readingFontSize", "zoom", "exportHtmlMode", "showMetadata"] as const;
@@ -133,6 +172,28 @@ function pickEnum<T extends string>(
 /** 可空整数（窗口坐标）：非法值一律退化为 null，交 Rust 侧回落主屏居中 */
 function pickNullableInt(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? Math.round(value) : null;
+}
+
+/** 可空非空串（F20 folderRoot）：空串/纯空白与非字符串一律 null（= 未挂载） */
+function pickNullableString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+/** 字符串数组（F20 folderExpanded/recentFolders）：滤掉非字符串与空串，超限截断 */
+function pickStringArray(value: unknown, cap: number): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item === "string" && item.trim() !== "") {
+      out.push(item);
+      if (out.length >= cap) {
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 function normalizeWindow(value: unknown): WindowGeometry {
@@ -172,6 +233,9 @@ export function migrateSettings(raw: unknown): Settings {
         : "hidden"
       : undefined;
 
+  // F20：根先算出来——sidebarView/folderExpanded 的归一化都以「有没有根」为前提
+  const folderRoot = pickNullableString(raw["folderRoot"]);
+
   return {
     theme: pickEnum(raw["theme"], THEMES, DEFAULT_SETTINGS.theme),
     fontSize: pickNumber(
@@ -186,6 +250,8 @@ export function migrateSettings(raw: unknown): Settings {
       ZOOM_MIN,
       ZOOM_MAX,
     ),
+    // 旧配置（≤ 本批次）没有这个键，pickEnum 会落到 fluid —— 升级后不会突然被钉成固定列宽
+    readingWidth: pickEnum(raw["readingWidth"], READING_WIDTHS, DEFAULT_SETTINGS.readingWidth),
     codeWrap: pickBoolean(raw["codeWrap"], DEFAULT_SETTINGS.codeWrap),
     frontmatterDisplay: pickEnum(
       raw["frontmatterDisplay"],
@@ -208,6 +274,20 @@ export function migrateSettings(raw: unknown): Settings {
       HTML_EXPORT_MODES,
       DEFAULT_SETTINGS.htmlExportMode,
     ),
+    // F20 不变式与 Rust sanitize 同款：未挂载根 → 视图退回 recent、展开集清空
+    sidebarView:
+      folderRoot === null
+        ? "recent"
+        : pickEnum(raw["sidebarView"], SIDEBAR_VIEWS, DEFAULT_SETTINGS.sidebarView),
+    folderRoot,
+    // 展开集追加在尾 → 超限时保**尾**（最新展开的）；最近文件夹新的插头 → 保头
+    folderExpanded:
+      folderRoot === null
+        ? []
+        : pickStringArray(raw["folderExpanded"], Number.MAX_SAFE_INTEGER).slice(
+            -FOLDER_EXPANDED_LIMIT,
+          ),
+    recentFolders: pickStringArray(raw["recentFolders"], RECENT_FOLDERS_LIMIT),
     window: normalizeWindow(raw["window"]),
   };
 }
@@ -331,12 +411,17 @@ function snapshotSettings(): Settings {
     theme: state.theme,
     fontSize: state.fontSize,
     zoomPercent: state.zoomPercent,
+    readingWidth: state.readingWidth,
     codeWrap: state.codeWrap,
     frontmatterDisplay: state.frontmatterDisplay,
     outlinePinned: state.outlinePinned,
     sidebarWidth: state.sidebarWidth,
     sidebarCollapsed: state.sidebarCollapsed,
     htmlExportMode: state.htmlExportMode,
+    sidebarView: state.sidebarView,
+    folderRoot: state.folderRoot,
+    folderExpanded: state.folderExpanded,
+    recentFolders: state.recentFolders,
     window: state.window,
   };
 }
@@ -416,6 +501,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     persist();
   },
 
+  setReadingWidth: (width) => {
+    set({ readingWidth: width });
+    persist();
+  },
+
   setCodeWrap: (wrap) => {
     set({ codeWrap: wrap });
     persist();
@@ -450,6 +540,44 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setHtmlExportMode: (mode) => {
     set({ htmlExportMode: mode });
+    persist();
+  },
+
+  setSidebarView: (view) => {
+    // 不变式：没有根就没有树视图（与 Rust sanitize 同款，双侧都守）
+    set({ sidebarView: get().folderRoot === null ? "recent" : view });
+    persist();
+  },
+
+  setFolderRoot: (root) => {
+    const normalized = root !== null && root.trim() !== "" ? root : null;
+    if (normalized === null) {
+      set({ folderRoot: null, folderExpanded: [], sidebarView: "recent" });
+      persist();
+      return;
+    }
+    // 挂载即切树视图；最近文件夹去重后插到最前（大小写/分隔符不敏感的比较
+    // 交给调用方 normalizePath 口径——settings 只做字面去重兜底）
+    const rest = get().recentFolders.filter((item) => item !== normalized);
+    set({
+      folderRoot: normalized,
+      folderExpanded: [],
+      sidebarView: "tree",
+      recentFolders: [normalized, ...rest].slice(0, RECENT_FOLDERS_LIMIT),
+    });
+    persist();
+  },
+
+  setFolderExpanded: (paths) => {
+    // 弃头保尾：folderTree.setExpanded 把新展开项**追加在尾**，slice(0, cap) 会
+    // 恰好丢掉刚展开的那一条——攒满上限后目录从此点不开（复审确认项）。
+    // 先 filter 再追加的写法让 slice(-cap) 天然构成 LRU。Rust sanitize 同向（drain 头部）。
+    set({ folderExpanded: paths.slice(-FOLDER_EXPANDED_LIMIT) });
+    persist();
+  },
+
+  removeRecentFolder: (path) => {
+    set({ recentFolders: get().recentFolders.filter((item) => item !== path) });
     persist();
   },
 }));

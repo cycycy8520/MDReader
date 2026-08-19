@@ -36,12 +36,20 @@ const RUST_WIRE_KEYS = [
   "theme",
   "fontSize",
   "zoomPercent",
+  // 与 Rust 侧一致：正文列宽紧挨着字号/缩放（同属排版一族）。
+  // 契约测比的是集合不是顺序，这里跟着 Rust 的字段顺序排只为对照时好读。
+  "readingWidth",
   "codeWrap",
   "frontmatterDisplay",
   "outlinePinned",
   "sidebarWidth",
   "sidebarCollapsed",
   "htmlExportMode",
+  // F20 文件夹模式四字段（批次 5）
+  "sidebarView",
+  "folderRoot",
+  "folderExpanded",
+  "recentFolders",
   "window",
 ];
 
@@ -125,6 +133,32 @@ describe("旧格式迁移", () => {
       sidebarWidth: SIDEBAR_WIDTH_MIN,
       zoomPercent: ZOOM_MAX,
     });
+  });
+});
+
+describe("F20 文件夹模式不变式（与 Rust sanitize 同款）", () => {
+  it("没有根就没有树：view 退回 recent、展开集清空", () => {
+    const migrated = migrateSettings({
+      sidebarView: "tree",
+      folderRoot: "  ",
+      folderExpanded: ["C:\\notes\\a", "C:\\notes\\b"],
+    });
+    expect(migrated.folderRoot).toBeNull();
+    expect(migrated.sidebarView).toBe("recent");
+    expect(migrated.folderExpanded).toEqual([]);
+  });
+
+  it("有根时保留视图与展开集，脏项过滤", () => {
+    const migrated = migrateSettings({
+      sidebarView: "tree",
+      folderRoot: "C:\\notes",
+      folderExpanded: ["C:\\notes\\a", 42, "", "C:\\notes\\b"],
+      recentFolders: ["C:\\notes", null, "D:\\docs"],
+    });
+    expect(migrated.folderRoot).toBe("C:\\notes");
+    expect(migrated.sidebarView).toBe("tree");
+    expect(migrated.folderExpanded).toEqual(["C:\\notes\\a", "C:\\notes\\b"]);
+    expect(migrated.recentFolders).toEqual(["C:\\notes", "D:\\docs"]);
   });
 });
 

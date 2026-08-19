@@ -47,6 +47,25 @@
  *   components/ContextMenu.tsx，条目排布在 components/contextMenuItems.ts（对拍附录 A），
  *   本文件只提供动作实现（复制 / 打开方式 / 缩放主题 / 最近列表增删）。
  *
+ * M2「导出能力」本文件负责的部分（FR-07 / FR-08 / FR-17 / DG 6.6）：
+ *   右键菜单「导出 ▸ HTML / PDF」与顶栏导出钮 → 唤起 components/ExportDialog；
+ *   Ctrl+P / 菜单「打印…」→ ipc.printDocument（系统打印对话框，复用打印模板）；
+ *   导出结果落成一条右下角 toast：成功给「打开文件 / 打开所在文件夹」两个可点动作，
+ *   失败原样展示 Rust AppError 的中文 message（后端的 message 本就是写给用户看的）。
+ *   导出进行中对话框不可关（Esc / 遮罩都吃掉）：后端停不下来，关掉只会丢掉唯一的进度反馈。
+ *
+ * M3「分享与生态」本文件负责的部分（FR-09 / FR-10 / FR-11 / FR-18）：
+ *   右键菜单「导出 ▸ 长图 PNG」「分享 ▸ 四项」与顶栏分享钮 → components/ShareDialog；
+ *     后端能力（copy_rich_text / capture_long_image / write_image / copy_file_to_clipboard /
+ *     另存对话框）以 ShareBackend 注入，实例是模块级常量 SHARE_BACKEND —— 面板内部拿它进
+ *     useCallback 依赖，每次渲染换一个新对象会让那些回调白白重建。
+ *   右键菜单「导入 Obsidian…」→ components/ObsidianImportDialog（它自己直连 ipc）；
+ *   左栏底部「设置」→ components/SettingsDialog（主题/字号/列宽/折行/frontmatter/导出模式），
+ *     其中「打开飞书设置…」再转 components/LarkSettingsDialog（飞书自建应用凭据）。
+ *   前两者的结果**复用导出那一套 toast**（三者 Outcome 同形，见 pushOutcomeToast），
+ *   不另造第二套提示条；飞书设置卡的反馈刻意留在卡里（保存完通常紧接着要测连接）。
+ *   Esc / 遮罩语义与导出卡一致：进行中一律吃掉——后端停不下来，关掉只会丢掉唯一的反馈。
+ *
  * 阅读区唯一允许的滚动动画是大纲跳转的 250ms 平滑滚动（军规 1）；
  * 加载态一律是一行淡字 + 10px 微 spinner，**不做骨架屏**（DG 6.6）。
  */
@@ -65,20 +84,59 @@ import {
 } from "react";
 
 import { ContextMenu, type MenuNode } from "./components/ContextMenu";
+import {
+  ExportDialog,
+  ExportToast,
+  runHtmlExport,
+  type ExportKind,
+  type ExportOutcome,
+  type ExportRequest,
+  type ExportToastAction,
+  type ExportToastState,
+} from "./components/ExportDialog";
 import { FindBar } from "./components/FindBar";
+import {
+  FirstRunGuide,
+  shouldShowFirstRunGuide,
+} from "./components/FirstRunGuide";
+import { ImageLightbox } from "./components/ImageLightbox";
+import { LarkSettingsDialog } from "./components/LarkSettingsDialog";
+import { SettingsDialog } from "./components/SettingsDialog";
+import {
+  ObsidianImportDialog,
+  type ObsidianImportOutcome,
+  type ObsidianImportRequest,
+} from "./components/ObsidianImportDialog";
+import { ResizeHandle } from "./components/ResizeHandle";
+import {
+  ShareDialog,
+  type ShareBackend,
+  type ShareOutcome,
+  type ShareRequest,
+} from "./components/ShareDialog";
 import {
   buildDocumentMenu,
   buildImageMenu,
   buildLinkMenu,
   buildRecentMenu,
+  buildSidebarMenu,
+  buildTreeMenu,
   type ContextMenuActions,
   type ImageTarget,
   type LinkTarget,
+  type EditorApp,
 } from "./components/contextMenuItems";
 import { t } from "./i18n/zh-CN";
 import { renderMarkdown, resolveLocalPath } from "./render/preview";
 import {
   appInfo,
+  browserPreviewPath,
+  openInBrowser,
+  ERR_EXPORT_TOO_LARGE,
+  captureLongImage,
+  copyFileToClipboard,
+  copyRichText,
+  onDirTreeChanged,
   onDragDrop,
   onFileChanged,
   onFileRemoved,
@@ -87,13 +145,21 @@ import {
   onWindowResized,
   openExternal,
   openFileDialog,
+  openFolderDialog,
+  listEditors,
+  openInEditor as invokeOpenInEditor,
   openWithDefaultApp,
+  openWithDialog,
+  printDocument,
   revealInExplorer,
+  saveFileDialog,
   windowClose,
   windowIsMaximized,
   windowMinimize,
   windowSetTitle,
   windowToggleMaximize,
+  writeImageToClipboard,
+  PNG_SAVE_FILTERS,
   type AppInfo,
 } from "./services/ipc";
 import {
@@ -104,12 +170,20 @@ import {
   type SessionPhase,
 } from "./stores/fileSession";
 import {
+  flattenTree,
+  parentOf,
+  useFolderTreeStore,
+  type TreeRow,
+} from "./stores/folderTree";
+import {
   normalizePath,
   useRecentFilesStore,
   type RecentGroupId,
 } from "./stores/recentFiles";
 import {
   readingStyleVars,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN,
   useSettingsStore,
   ZOOM_PRESETS,
   ZOOM_STEP,
@@ -117,9 +191,13 @@ import {
 import { useUiStateStore } from "./stores/uiState";
 import {
   ENCODING_LABEL,
+  type DirChild,
+  type LarkCredentialStatus,
   type OutlineNode,
+  type ReadingWidth,
   type RecentFile,
   type ScrollAnchor,
+  type SidebarView,
   type Theme,
 } from "./types";
 
@@ -160,11 +238,58 @@ const EXTERNAL_HREF_RE = /^https?:\/\//i;
 /** 盘符绝对路径 / UNC：不再以当前文档目录为基准解析 */
 const ABSOLUTE_PATH_RE = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
 
+/* ── M3 各卡的结果（M2 的 ExportOutcome 同形） ───────────────── */
+
+/**
+ * ShareOutcome 与 ObsidianImportOutcome 的公共形状。
+ * 三张卡（导出 / 分享 / 导入 Obsidian）的结局本就同构，收敛成一个类型后
+ * 结果 toast 只需写一份实现（见 pushOutcomeToast）。
+ */
+type OutputOutcome =
+  | { readonly ok: true; readonly message: string; readonly output?: string }
+  | { readonly ok: false; readonly message: string };
+
+/* ── 分享面板注入的后端能力（M3） ───────────────────────────── */
+
+/**
+ * ShareDialog 的 ShareBackend 实例。
+ *
+ * **必须是模块级常量，不能在渲染里现造**：面板内部把 backend 放进了 useCallback 的依赖，
+ * 每次渲染换一个新对象等于让那几个回调（复制富文本 / 复制长图 / 另存长图）不停重建。
+ * 它只引用 ipc.ts 的顶层函数，没有任何随渲染变化的东西，天然可以提到组件外。
+ *
+ * 逐项都填了真实封装、没有一个 null：M3 的四条链路（copy_rich_text / capture_long_image /
+ * clipboard write_image / copy_file_to_clipboard）后端都已实装。
+ *
+ * 长图进剪贴板这条**刻意不在 App 里包一层**：capture.rs 的 copiedToClipboard 恒为 false
+ * （Rust 侧写不了图片剪贴板），正确路径是 pngBase64 → composeSegments → decodePngToRgba →
+ * writeImageToClipboard，而这套拼接与降级（超 canvas 上限时退成只复制第 1 段并如实说明）
+ * 已经写在 ShareDialog 里了。App 再包一层只会多出第二套失败语义。
+ */
+const SHARE_BACKEND: ShareBackend = {
+  copyRichText,
+  captureLongImage,
+  writeImageToClipboard,
+  copyFileToClipboard,
+  // 另存长图走与导出同一个保存对话框，只是换成 PNG 过滤器
+  pickImagePath: (defaultPath) => saveFileDialog(defaultPath, PNG_SAVE_FILTERS),
+};
+
 /* ── 纯函数工具 ─────────────────────────────────────────────── */
 
 function isSupportedPath(path: string): boolean {
   const lower = path.toLowerCase();
   return SUPPORTED_EXTENSIONS.some((ext) => lower.endsWith(`.${ext}`));
+}
+
+/**
+ * 拖入的路径没有扩展名 → 可能是文件夹（F20）。前端拿不到 isDirectory，
+ * enter 阶段据此按「可能可以」处理，drop 阶段交给 mount 的后端验证一锤定音
+ * （带点的目录名会被误判成文件——代价只是遮罩短暂显示 danger 态，drop 仍会尝试）。
+ */
+function maybeFolderPath(path: string): boolean {
+  const name = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+  return name !== "" && !name.includes(".");
 }
 
 /** 状态栏 zoom% 点击循环：取比当前值大的第一档，越界回到最小档（档位表在 settings store） */
@@ -745,6 +870,25 @@ function IconFolderOpen(props: IconProps) {
   );
 }
 
+/** 文件夹（闭合）：树视图的目录行与栏头切换钮（F20），与顶栏敞口文件夹区分 */
+function IconFolder(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <path d="M3.5 18.5v-12A1.5 1.5 0 0 1 5 5h4.1l2 2.5H19a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 18.5H5a1.5 1.5 0 0 1-1.5-1.5Z" />
+    </Glyph>
+  );
+}
+
+/** 时钟：栏头视图切换的「最近」态（F20） */
+function IconClock(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3 2" />
+    </Glyph>
+  );
+}
+
 function IconOutline(props: IconProps) {
   return (
     <Glyph {...props}>
@@ -754,25 +898,8 @@ function IconOutline(props: IconProps) {
   );
 }
 
-function IconExport(props: IconProps) {
-  return (
-    <Glyph {...props}>
-      <path d="M12 15V4m0 0-3.5 3.5M12 4l3.5 3.5" />
-      <path d="M4.5 15v3a2.5 2.5 0 0 0 2.5 2.5h10a2.5 2.5 0 0 0 2.5-2.5v-3" />
-    </Glyph>
-  );
-}
-
-function IconShare(props: IconProps) {
-  return (
-    <Glyph {...props}>
-      <circle cx="18" cy="5" r="2.5" />
-      <circle cx="6" cy="12" r="2.5" />
-      <circle cx="18" cy="19" r="2.5" />
-      <path d="m8.3 10.8 7.4-4.3M8.3 13.2l7.4 4.3" />
-    </Glyph>
-  );
-}
+/* IconExport / IconShare 已随顶栏导出/分享钮一起移除（v0.6.1，用户决定）：
+   导出与分享的入口只剩正文右键菜单（图标走 ContextMenu 自己的图标表）。 */
 
 /** 三角箭头：默认指右（收起），展开时由调用方 rotate-90 指下 */
 function IconChevron(props: IconProps) {
@@ -875,6 +1002,20 @@ function IconMonitor(props: IconProps) {
   );
 }
 
+/**
+ * 设置：齿轮。八齿的实心齿轮在 14px 下会糊，这里用"圆环 + 四根短辐"的简化画法，
+ * 与本文件其余图标同一口径（轮廓型、stroke 1.5、currentColor）。
+ */
+function IconSettings(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <circle cx="12" cy="12" r="3.2" />
+      <path d="M12 3.5v2.6M12 17.9v2.6M3.5 12h2.6M17.9 12h2.6" />
+      <path d="m6 6 1.8 1.8M16.2 16.2 18 18M18 6l-1.8 1.8M7.8 16.2 6 18" />
+    </Glyph>
+  );
+}
+
 /** 警示条图标：三角感叹号，色由调用方给（danger / warn） */
 function IconAlert(props: IconProps) {
   return (
@@ -893,8 +1034,17 @@ interface IconButtonProps {
   /** 未实现的功能不传，按钮保持无行为（不写 alert 之类占位） */
   readonly onClick?: () => void;
   readonly active?: boolean;
-  /** 功能尚未落地：opacity-40 + cursor-default + tooltip「开发中」，且不触发 onClick */
+  /**
+   * 此刻不可用（无文档、无选区…）：opacity-40 + cursor-default，且不触发 onClick。
+   * tooltip 仍是功能名本身——功能是有的，只是现在没条件用。
+   */
   readonly disabled?: boolean;
+  /**
+   * 功能**尚未落地**：同样置灰，但 tooltip 追加「（开发中）」。
+   * 与 disabled 分家的理由同 ContextMenu 的 disabled/pending：
+   * 把"暂时不可用"说成"开发中"会让用户以为功能根本不存在（DG 6.4 全局条 B）。
+   */
+  readonly pending?: boolean;
   readonly className?: string;
 }
 
@@ -911,18 +1061,20 @@ function IconButton({
   onClick,
   active = false,
   disabled = false,
+  pending = false,
   className = "",
 }: IconButtonProps) {
+  const inactive = disabled || pending;
   return (
     <button
       type="button"
       aria-label={label}
-      title={disabled ? `${label}${t.common.comingSoonSuffix}` : label}
-      aria-disabled={disabled ? true : undefined}
-      aria-pressed={!disabled && onClick ? active : undefined}
-      onClick={disabled ? undefined : onClick}
+      title={pending ? `${label}${t.common.comingSoonSuffix}` : label}
+      aria-disabled={inactive ? true : undefined}
+      aria-pressed={!inactive && onClick ? active : undefined}
+      onClick={inactive ? undefined : onClick}
       className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
-        disabled
+        inactive
           ? "cursor-default text-tertiary opacity-40"
           : `hover:bg-hover hover:text-secondary ${
               active ? "bg-hover text-secondary" : "text-tertiary"
@@ -1014,6 +1166,8 @@ interface TopBarProps {
   readonly onToggleSidebar: () => void;
   readonly onToggleOutline: () => void;
   readonly onOpenFile: () => void;
+  /** 顶栏「打开文件夹」（F20）：与右键「打开文件夹 ▸」/Ctrl+Shift+O 同一入口 */
+  readonly onOpenFolder: () => void;
 }
 
 /**
@@ -1029,6 +1183,7 @@ function TopBar({
   onToggleSidebar,
   onToggleOutline,
   onOpenFile,
+  onOpenFolder,
 }: TopBarProps) {
   const hasDocument = path !== null;
 
@@ -1080,8 +1235,13 @@ function TopBar({
           <IconButton label={t.topbar.open} onClick={onOpenFile}>
             <IconFolderOpen />
           </IconButton>
-          {/* 查找在批次 3 点亮，导出/分享在 M2；未实现一律 disabled，不写占位 onClick。
-              「更多」菜单在批次 3 的右键菜单一并落地，无内容期间直接不画。 */}
+          {/* 打开文件夹（F20，批次 5.5）：顶栏是最高频入口，不许把它只藏在右键里。
+              导出/分享钮已按用户 2026-08-19 决定撤下——与右键菜单完全重复，
+              「一个功能多个入口」在顶栏这种寸土寸金的地方是负资产；
+              导出/分享/打印全部走右键菜单与 Ctrl+P（DG 5.2 v0.6.1 修订）。 */}
+          <IconButton label={t.topbar.openFolder} onClick={onOpenFolder}>
+            <IconFolder />
+          </IconButton>
           {/* 无文档时查找没有意义，保持禁用；有文档则唤起浮条（快捷键 Ctrl+F 由 FindBar 自注册） */}
           <IconButton
             label={t.topbar.find}
@@ -1102,12 +1262,6 @@ function TopBar({
             active={outlineOpen}
           >
             <IconOutline />
-          </IconButton>
-          <IconButton label={t.topbar.export} disabled>
-            <IconExport />
-          </IconButton>
-          <IconButton label={t.topbar.share} disabled>
-            <IconShare />
           </IconButton>
         </nav>
       )}
@@ -1428,6 +1582,110 @@ interface RecentReveal {
   readonly seq: number;
 }
 
+/**
+ * 树视图的一行（F20）：目录 = 箭头 + 文件夹图标 + 名字，单击展开/收起；
+ * 文件 = 文件图标 + 名字，单击即打开（查看器无「预览/固定」两态，DG 5.3.1）。
+ * 选中态/hover 与最近条目同款（铁律 3）；缩进走 inline style——
+ * 它与栏宽一样是**连续计算值**（8 + depth×16），类名表达不了每一层。
+ */
+function TreeNodeRow({
+  child,
+  depth,
+  expanded,
+  selected,
+  roving,
+  onToggleDir,
+  onOpen,
+  onFocus,
+}: {
+  readonly child: DirChild;
+  readonly depth: number;
+  readonly expanded: boolean;
+  readonly selected: boolean;
+  readonly roving: boolean;
+  readonly onToggleDir: (path: string) => void;
+  readonly onOpen: (path: string) => void;
+  readonly onFocus: (path: string) => void;
+}) {
+  return (
+    <div
+      role="option"
+      aria-selected={selected}
+      aria-expanded={child.isDir ? expanded : undefined}
+      title={child.path}
+      tabIndex={roving ? 0 : -1}
+      // 右键菜单的命中标记（附录 A.4）；键盘导航按 data-tree-path 数行
+      data-tree-path={child.path}
+      data-tree-dir={child.isDir ? "true" : "false"}
+      onClick={() => {
+        if (child.isDir) {
+          onToggleDir(child.path);
+        } else {
+          onOpen(child.path);
+        }
+      }}
+      onFocus={() => onFocus(child.path)}
+      style={{ paddingLeft: `${8 + depth * 16}px` }}
+      className={`group flex h-row w-full cursor-default select-none items-center gap-1.5 rounded-row pr-2 text-left hover:bg-hover ${
+        selected ? "bg-hover" : ""
+      }`}
+    >
+      {child.isDir ? (
+        <>
+          <IconChevron
+            size={12}
+            className={`shrink-0 text-tertiary transition-transform duration-150 ease-standard ${
+              expanded ? "rotate-90" : ""
+            }`}
+          />
+          <IconFolder size={14} className="shrink-0 text-tertiary" />
+        </>
+      ) : (
+        <IconFile size={14} className="shrink-0 text-tertiary" />
+      )}
+      <span className="min-w-0 flex-1 truncate text-ui text-primary">
+        {child.name}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * 树的说明行（F20）：空目录占位 / 截断提示 / 读取失败重试。
+ * 前两种是纯文字（DG 6.6：一行淡字，不画插画）；error 行是可点的重试入口
+ * （DG 10-9：网络盘断线这类失败必须给出路，不许留一层静默的空白）。
+ */
+function TreeNoticeRow({
+  row,
+  onRetry,
+}: {
+  readonly row: Extract<TreeRow, { kind: "notice" }>;
+  readonly onRetry: (dir: string) => void;
+}) {
+  // 与同层 node 行的文字左沿对齐：本行没有图标，把图标位（18px）并进缩进
+  const indent = { paddingLeft: `${8 + row.depth * 16 + 18}px` };
+  if (row.notice === "error") {
+    return (
+      <button
+        type="button"
+        style={indent}
+        onClick={() => onRetry(row.dir)}
+        className="flex h-row w-full items-center rounded-row pr-2 text-left text-ui-sm text-danger hover:bg-hover"
+      >
+        {t.sidebar.treeError}
+      </button>
+    );
+  }
+  return (
+    <p
+      style={indent}
+      className="flex h-row select-none items-center pr-2 text-ui-sm text-tertiary"
+    >
+      {row.notice === "empty" ? t.sidebar.treeEmptyDir : t.sidebar.treeTruncated}
+    </p>
+  );
+}
+
 interface SidebarProps {
   readonly groups: readonly RecentGroupView[];
   readonly filtering: boolean;
@@ -1435,14 +1693,37 @@ interface SidebarProps {
   readonly currentPath: string | null;
   readonly missingPaths: readonly string[];
   readonly collapsedGroups: readonly RecentGroupId[];
-  /** 可见条目的路径序列（已按分组顺序摊平、已剔除折叠组），键盘导航的唯一依据 */
+  /**
+   * 可见条目的路径序列（键盘导航的唯一依据）。
+   * 最近视图 = 分组摊平后的最近文件；树视图 = 树的可聚焦 node 行。
+   * 与 DOM 里 [data-recent-path]/[data-tree-path] 的出现顺序是同一次渲染的产物。
+   */
   readonly flatPaths: readonly string[];
   readonly reveal: RecentReveal | null;
+  /* ── F20 文件夹模式 ── */
+  readonly view: SidebarView;
+  readonly folderRoot: string | null;
+  readonly folderName: string;
+  readonly treeRows: readonly TreeRow[];
+  /** 根层已加载（含 error 态）。false = 还在读盘——绝不能把这段窗口渲染成「无文件」 */
+  readonly treeReady: boolean;
+  readonly onSwitchView: (view: SidebarView) => void;
+  readonly onToggleDir: (path: string) => void;
+  readonly onRetryDir: (path: string) => void;
+  readonly onCloseFolder: () => void;
   readonly onFilterChange: (value: string) => void;
   readonly onToggleGroup: (id: RecentGroupId) => void;
   readonly onOpen: (path: string) => void;
   readonly onTogglePin: (path: string) => void;
   readonly onOpenFile: () => void;
+  /**
+   * 左栏底部「设置」（M3）：唤起飞书凭据设置卡。
+   * 现在这里只有飞书这一件事，所以卡片本身就叫「飞书导入设置」；将来设置项变多时
+   * 换成一张分组的设置卡即可，左栏这一行不用动。
+   */
+  readonly onOpenSettings: () => void;
+  /** 当前栏宽（px），真源是 settings.sidebarWidth；拖拽把手是 App 里的兄弟节点 */
+  readonly width: number;
 }
 
 function Sidebar({
@@ -1454,11 +1735,22 @@ function Sidebar({
   collapsedGroups,
   flatPaths,
   reveal,
+  view,
+  folderRoot,
+  folderName,
+  treeRows,
+  treeReady,
+  onSwitchView,
+  onToggleDir,
+  onRetryDir,
+  onCloseFolder,
   onFilterChange,
   onToggleGroup,
   onOpen,
   onTogglePin,
   onOpenFile,
+  onOpenSettings,
+  width,
 }: SidebarProps) {
   const listRef = useRef<HTMLDivElement>(null);
   /**
@@ -1467,12 +1759,14 @@ function Sidebar({
    */
   const [activePath, setActivePath] = useState<string | null>(null);
 
-  /** DOM 顺序 = flatPaths 顺序（两者都由同一次渲染产出），故可按下标互查 */
+  /** DOM 顺序 = flatPaths 顺序（两者都由同一次渲染产出），故可按下标互查。
+      两个视图互斥渲染，选择器并集不会同时命中两套行。 */
   const rowsOf = useCallback(
     (): HTMLElement[] =>
       Array.from(
-        listRef.current?.querySelectorAll<HTMLElement>("[data-recent-path]") ??
-          [],
+        listRef.current?.querySelectorAll<HTMLElement>(
+          "[data-recent-path], [data-tree-path]",
+        ) ?? [],
       ),
     [],
   );
@@ -1562,6 +1856,21 @@ function Sidebar({
           event.preventDefault();
           focusRowAt(rows.length - 1);
           return;
+        // 树视图专属（F20）：→ 展开目录、← 收起目录；落在文件行/最近行上无动作
+        case "ArrowRight":
+        case "ArrowLeft": {
+          const row: HTMLElement | undefined = rows[current];
+          if (row?.dataset.treeDir !== "true") {
+            return;
+          }
+          const treePath = row.dataset.treePath ?? "";
+          const isOpen = row.getAttribute("aria-expanded") === "true";
+          if (treePath !== "" && (event.key === "ArrowRight") !== isOpen) {
+            event.preventDefault();
+            onToggleDir(treePath);
+          }
+          return;
+        }
         case "Enter": {
           // 分组折叠钮与行内动作钮是真 button，Enter 归它们自己（否则会变成"打开文件"）
           const target = event.target;
@@ -1569,7 +1878,21 @@ function Sidebar({
             return;
           }
           const row: HTMLElement | undefined = rows[current];
-          const rowPath = row?.dataset.recentPath;
+          if (row === undefined) {
+            return;
+          }
+          // 树行（F20）：目录 Enter = 展开/收起，文件 Enter = 打开
+          const treePath = row.dataset.treePath;
+          if (treePath !== undefined && treePath !== "") {
+            event.preventDefault();
+            if (row.dataset.treeDir === "true") {
+              onToggleDir(treePath);
+            } else {
+              onOpen(treePath);
+            }
+            return;
+          }
+          const rowPath = row.dataset.recentPath;
           if (rowPath !== undefined && rowPath !== "") {
             event.preventDefault();
             onOpen(rowPath);
@@ -1580,7 +1903,7 @@ function Sidebar({
           return;
       }
     },
-    [activePath, flatPaths, focusRowAt, onOpen, rowsOf],
+    [activePath, flatPaths, focusRowAt, onOpen, onToggleDir, rowsOf],
   );
 
   /** 列表里 tabIndex=0 的那一条：记忆位置失效（被过滤掉/被移除）时退回第一条 */
@@ -1588,17 +1911,139 @@ function Sidebar({
   const rovingPath =
     flatPaths.find((item) => samePath(item, activePath)) ?? firstPath ?? null;
 
+  /**
+   * 树视图的 reveal 滚动半边（F20）：展开链条由 store.revealPath 负责，这里只把
+   * 当前文件那一行滚进左栏视野。依赖 treeRows 是因为懒加载分几帧落地，行可能
+   * 晚到；ref 记账防后台刷新反复滚动。只滚不 focus——不抢阅读区的焦点。
+   */
+  const revealedTreePath = useRef<string | null>(null);
+  useEffect(() => {
+    if (view !== "tree" || currentPath === null) {
+      return;
+    }
+    if (samePath(revealedTreePath.current, currentPath)) {
+      return;
+    }
+    const row = rowsOf().find((item) =>
+      samePath(item.dataset.treePath ?? null, currentPath),
+    );
+    if (row !== undefined) {
+      revealedTreePath.current = currentPath;
+      row.scrollIntoView({ block: "nearest" });
+    }
+  }, [view, currentPath, treeRows, rowsOf]);
+
   return (
-    <aside className="flex w-sidebar shrink-0 flex-col border-r border-l1 bg-panel px-3 py-1.5">
+    <aside
+      // 宽度走 inline style 而不是 Tailwind 类：它是**连续可拖**的值，
+      // 类名只能表达有限档位，拖拽时每一像素都要生效。
+      style={{ width: `${width}px` }}
+      // 空白区右键菜单的命中标记（附录 A.5）：行与输入框在委托里先行截走
+      data-sidebar-shell="true"
+      className="flex shrink-0 flex-col border-r border-l1 bg-panel px-3 py-1.5"
+    >
       <SidebarSearch
         value={filter}
         onChange={onFilterChange}
         onEnterList={focusFirstRow}
       />
 
+      {/* F20 栏头：只在挂载了文件夹时出现——未挂载时左栏与旧版逐像素一致。
+          两枚 16px 切换钮互斥高亮（当前视图 bg-hover），互切不卸载树（展开态保留）；
+          × = 卸载文件夹回最近列表，只动 settings，不碰磁盘。 */}
+      {folderRoot === null ? null : (
+        <div className="mt-1.5 flex h-row-group shrink-0 items-center gap-0.5 px-1">
+          <IconFolder size={14} className="ml-1 shrink-0 text-tertiary" />
+          <span
+            title={folderRoot}
+            className="min-w-0 flex-1 truncate text-ui-sm text-secondary"
+          >
+            {folderName}
+          </span>
+          <button
+            type="button"
+            aria-pressed={view === "recent"}
+            title={t.sidebar.viewRecent}
+            onClick={() => onSwitchView("recent")}
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-row ${
+              view === "recent"
+                ? "bg-hover text-secondary"
+                : "text-tertiary hover:bg-hover hover:text-secondary"
+            }`}
+          >
+            <IconClock size={16} />
+          </button>
+          <button
+            type="button"
+            aria-pressed={view === "tree"}
+            title={t.sidebar.viewFolder}
+            onClick={() => onSwitchView("tree")}
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-row ${
+              view === "tree"
+                ? "bg-hover text-secondary"
+                : "text-tertiary hover:bg-hover hover:text-secondary"
+            }`}
+          >
+            <IconFolder size={16} />
+          </button>
+          <button
+            type="button"
+            title={t.sidebar.closeFolder}
+            onClick={onCloseFolder}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-row text-tertiary hover:bg-hover hover:text-secondary"
+          >
+            <IconClose size={12} />
+          </button>
+        </div>
+      )}
+
       <div className="relative mt-1.5 flex min-h-0 flex-1 flex-col">
         <div className="quiet-bars min-h-0 flex-1 overflow-y-auto pb-4 [scrollbar-gutter:stable]">
-          {groups.length === 0 ? (
+          {view === "tree" && folderRoot !== null ? (
+            treeRows.length === 0 ? (
+              <div className="px-2 py-4">
+                <p className="text-ui-sm text-tertiary">
+                  {filtering
+                    ? t.sidebar.emptyFiltered
+                    : treeReady
+                      ? t.sidebar.treeEmptyDir
+                      : t.sidebar.treeLoading}
+                </p>
+              </div>
+            ) : (
+              <div
+                ref={listRef}
+                role="listbox"
+                aria-label={t.sidebar.treeListLabel}
+                onKeyDown={onListKeyDown}
+                className="space-y-0.5"
+              >
+                {treeRows.map((row) =>
+                  row.kind === "node" ? (
+                    <TreeNodeRow
+                      key={row.child.path}
+                      child={row.child}
+                      depth={row.depth}
+                      expanded={row.expanded}
+                      selected={
+                        !row.child.isDir && samePath(row.child.path, currentPath)
+                      }
+                      roving={samePath(row.child.path, rovingPath)}
+                      onToggleDir={onToggleDir}
+                      onOpen={onOpen}
+                      onFocus={setActivePath}
+                    />
+                  ) : (
+                    <TreeNoticeRow
+                      key={`${row.notice}:${row.dir}`}
+                      row={row}
+                      onRetry={onRetryDir}
+                    />
+                  ),
+                )}
+              </div>
+            )
+          ) : groups.length === 0 ? (
             <div className="px-2 py-4">
               <p className="text-ui-sm text-tertiary">
                 {filtering ? t.sidebar.emptyFiltered : t.sidebar.empty}
@@ -1648,6 +2093,26 @@ function Sidebar({
           className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-b from-transparent to-panel"
         />
       </div>
+
+      {/*
+        左栏底部「设置」（M3）：飞书自建应用凭据在这里配。
+
+        它**不进列表容器**——列表是 role=listbox，往里塞一个非 option 的按钮会打乱
+        roving tabindex 与 ↑↓ 的行序列（那套导航按 [data-recent-path] 数行）。
+        样式与文件条目同款（h-row / rounded-row / hover 只换底色），
+        视觉上属于左栏而不是另起一个"设置区"。
+      */}
+      <button
+        type="button"
+        title={t.sidebar.settings}
+        onClick={onOpenSettings}
+        className="mt-1 flex h-row shrink-0 cursor-default select-none items-center gap-1.5 rounded-row px-2 text-left hover:bg-hover"
+      >
+        <IconSettings size={14} className="shrink-0 text-tertiary" />
+        <span className="min-w-0 flex-1 truncate text-ui text-primary">
+          {t.sidebar.settings}
+        </span>
+      </button>
     </aside>
   );
 }
@@ -1655,7 +2120,17 @@ function Sidebar({
 /* ── 阅读区 ─────────────────────────────────────────────────── */
 
 /** 无文档：Hero 式空状态（不是灰块、不是骨架屏） */
-function ReadingHero({ onOpenFile }: { readonly onOpenFile: () => void }) {
+function ReadingHero({
+  onOpenFile,
+  onOpenFolder,
+  onSetDefault,
+}: {
+  readonly onOpenFile: () => void;
+  /** F20 入口之三：空状态页也能直接挂载一个文件夹 */
+  readonly onOpenFolder: () => void;
+  /** 再次唤起首启引导：向导只在首次自动弹一次，之后这里是唯一的入口 */
+  readonly onSetDefault: () => void;
+}) {
   return (
     <div className="mx-auto flex min-h-full max-w-reading flex-col items-center justify-center px-8 pb-[12vh] pt-4 text-center animate-fade-in">
       <div
@@ -1676,6 +2151,22 @@ function ReadingHero({ onOpenFile }: { readonly onOpenFile: () => void }) {
         className="mt-5 flex h-btn items-center rounded-btn bg-brand px-3.5 text-ui font-medium text-inverted hover:bg-brand-hover"
       >
         {t.common.open}
+      </button>
+
+      <button
+        type="button"
+        onClick={onOpenFolder}
+        className="mt-2 flex h-row items-center rounded-row px-2 text-ui text-tertiary hover:bg-hover hover:text-primary"
+      >
+        {t.common.mountFolder}
+      </button>
+
+      <button
+        type="button"
+        onClick={onSetDefault}
+        className="mt-1 flex h-row items-center rounded-row px-2 text-ui text-tertiary hover:bg-hover hover:text-primary"
+      >
+        {t.reading.setDefaultViewer}
       </button>
     </div>
   );
@@ -1753,6 +2244,8 @@ interface ReadingAreaProps {
   /** 缩放百分比 90–150（settings.zoomPercent） */
   readonly zoomPercent: number;
   readonly codeWrap: boolean;
+  /** 正文列宽三态（设置页可改）；CSS 在 styles/markdown.css 的 [data-reading-width] */
+  readonly readingWidth: ReadingWidth;
   /**
    * 本次读入是静默刷新（外部保存 / F5 / 切主题）：不显示 LoadingLine、不压暗旧正文。
    * 2.1 的核心之一——用户没有主动做任何事，界面就不该有任何"在忙"的表演。
@@ -1761,6 +2254,10 @@ interface ReadingAreaProps {
   /** 大文件降级提示条（FR-01 / 2.8） */
   readonly isLarge: boolean;
   readonly onOpenFile: () => void;
+  /** 空状态页的「打开文件夹」（F20 入口之三） */
+  readonly onOpenFolder: () => void;
+  /** 空状态页的「设为默认查看器」：再次唤起首启引导 */
+  readonly onSetDefault: () => void;
   readonly onRetry: () => void;
 }
 
@@ -1774,9 +2271,12 @@ function ReadingArea({
   fontSize,
   zoomPercent,
   codeWrap,
+  readingWidth,
   silent,
   isLarge,
   onOpenFile,
+  onOpenFolder,
+  onSetDefault,
   onRetry,
 }: ReadingAreaProps) {
   const busy = phase === "loading" || phase === "rendering";
@@ -1803,7 +2303,13 @@ function ReadingArea({
       tabIndex={-1}
       className="quiet-bars min-w-0 flex-1 overflow-y-auto bg-canvas"
     >
-      {phase === "empty" ? <ReadingHero onOpenFile={onOpenFile} /> : null}
+      {phase === "empty" ? (
+        <ReadingHero
+          onOpenFile={onOpenFile}
+          onOpenFolder={onOpenFolder}
+          onSetDefault={onSetDefault}
+        />
+      ) : null}
 
       {phase === "error" ? (
         <ReadingError
@@ -1818,9 +2324,10 @@ function ReadingArea({
       {/* 渲染容器常驻（error / empty 时不挂载），切换文档时由渲染层原位替换内容。
           列宽三态 data-reading-width="fluid|medium|wide"（CSS 在 styles/markdown.css）：
           默认 fluid = 内容宽度跟随窗口（MPE 行为），padding 32px / 窄窗 16px 也由那里接管；
-          切换 UI 属后续设置页，本次只保证容器属性与 CSS 就位。 */}
+          档位由设置页写进 settings.readingWidth，这里只负责把它挂到属性上——
+          曾经这里写死 "fluid"，于是设置改了、落盘了、屏幕上却纹丝不动。 */}
       <div
-        data-reading-width="fluid"
+        data-reading-width={readingWidth}
         data-code-wrap={codeWrapAttr}
         style={readingVars}
         className={phase === "empty" || phase === "error" ? "hidden" : ""}
@@ -1925,7 +2432,15 @@ interface OutlinePanelProps {
 /** 与阅读区同底色，故左边界需要比左栏更明显一档：border-l2（铁律 8） */
 function OutlinePanel({ nodes, activeId, onJump, onClose }: OutlinePanelProps) {
   return (
-    <aside className="flex w-outline shrink-0 flex-col border-l border-l2 bg-canvas">
+    <aside
+      /* 窄窗口下改为浮层覆盖在正文之上，而不是继续占一列。
+         阈值 1100px 的来历：左栏 280 + 大纲 300 = 580，1100 时正文还剩 520 —— 这是
+         中文正文还能正常读的下限。再往下若仍占一列，正文会被压到 200 出头，
+         卡片和表格会退化成「一格一个字竖排」，等于这个窗口宽度下软件不可用
+         （窗口 minWidth 是 800，所以那个状态用户真的拖得到，不是理论情况）。
+         让大纲让位而不是让正文让位：正文是主体，大纲是导航，谁是配角很清楚。 */
+      className="flex w-outline shrink-0 flex-col border-l border-l2 bg-canvas max-[1100px]:absolute max-[1100px]:inset-y-0 max-[1100px]:right-0 max-[1100px]:z-20 max-[1100px]:shadow-lv3"
+    >
       <div className="flex shrink-0 items-center justify-between border-b border-l2 px-3 pb-3 pt-3.5">
         <span className="text-ui font-medium text-primary">
           {t.outline.title}
@@ -2146,6 +2661,16 @@ export default function App() {
   const toggleSidebar = useUiStateStore((state) => state.toggleSidebar);
   const outlineMode = useUiStateStore((state) => state.outlineMode);
   const setOutlineMode = useUiStateStore((state) => state.setOutlineMode);
+  // 栏宽真源在 settings（要持久化）；uiState 里那份是镜像，见 uiState.ts 的例外说明
+  const sidebarWidth = useSettingsStore((state) => state.sidebarWidth);
+  const setSidebarWidth = useSettingsStore((state) => state.setSidebarWidth);
+  // F20 文件夹模式：持久态在 settings，树的运行态（各层缓存）在 folderTree store
+  const sidebarView = useSettingsStore((state) => state.sidebarView);
+  const setSidebarView = useSettingsStore((state) => state.setSidebarView);
+  const folderRoot = useSettingsStore((state) => state.folderRoot);
+  const folderExpanded = useSettingsStore((state) => state.folderExpanded);
+  const treeLayers = useFolderTreeStore((state) => state.layers);
+  const lightboxSrc = useUiStateStore((state) => state.lightboxSrc);
   const dragOverlay = useUiStateStore((state) => state.dragOverlay);
   const setDragOverlay = useUiStateStore((state) => state.setDragOverlay);
 
@@ -2165,6 +2690,7 @@ export default function App() {
   const zoomPercent = useSettingsStore((state) => state.zoomPercent);
   const fontSize = useSettingsStore((state) => state.fontSize);
   const codeWrap = useSettingsStore((state) => state.codeWrap);
+  const readingWidth = useSettingsStore((state) => state.readingWidth);
   const frontmatterDisplay = useSettingsStore((state) => state.frontmatterDisplay);
 
   const scrollerRef = useRef<HTMLElement>(null);
@@ -2208,6 +2734,61 @@ export default function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [aboutInfo, setAboutInfo] = useState<AppInfo | null>(null);
   const aboutOpenRef = useRef(false);
+  /** 首启引导（F2）。见下方 useEffect 里关于「为什么要等会话落定」的说明 */
+  const [guideOpen, setGuideOpen] = useState(false);
+  /**
+   * 本机已装的编辑器（「用其他编辑器打开 ▸」子菜单的数据源）。
+   * 挂载时探一次就够：装没装编辑器不会在一次会话里变，而后端每次 open_in_editor
+   * 都会自己重新探测做白名单，这份只是 UI 缓存。探测失败最坏是子菜单只剩
+   * 「其他程序…」，仍然可用，所以只 warn 不打扰用户。
+   */
+  const [editors, setEditors] = useState<readonly EditorApp[]>([]);
+  /**
+   * 灯箱的「从哪儿放大」与 alt。真源是 uiState.lightboxSrc（Esc 的层级链要读它），
+   * 这两样只在开着的时候有意义，放 ref 里避免为一次动画多一轮渲染。
+   */
+  const lightboxOrigin = useRef<{
+    alt: string;
+    rect: { left: number; top: number; width: number; height: number };
+  } | null>(null);
+
+  /**
+   * 导出对话框（M2 / FR-07 / FR-08）。null = 没开。
+   * ref 与 state 并存的理由同 aboutOpenRef：Esc 的全局监听不能因为它变化而重挂。
+   * busyRef 是"导出正在跑"，Esc 与遮罩点击都要看它——导出中关掉卡片停不下后端，
+   * 只会让用户对着一个没有任何反馈的界面等着。
+   */
+  const [exportRequest, setExportRequest] = useState<ExportRequest | null>(null);
+  const exportOpenRef = useRef(false);
+  const exportBusyRef = useRef(false);
+  /** 导出结果 toast（DG 6.6）。id 自增，连续两次导出的同样文案也能重置计时与入场 */
+  const [exportToast, setExportToast] = useState<ExportToastState | null>(null);
+  const exportToastSeq = useRef(0);
+
+  /**
+   * 分享面板（M3 / FR-10 / FR-11 / FR-18）。null = 没开。
+   * 三件套（state + openRef + busyRef）与导出卡完全同构，理由也一样：
+   * Esc 的全局监听不能因为面板开合而重挂，而「进行中」必须能在监听里被读到——
+   * 长图生成要跑好几秒且后端停不下来，此时关掉面板只会丢掉唯一的进度反馈。
+   * 结果不另起 toast：ShareOutcome 与 ExportOutcome 同形，共用 ExportToast 那一条。
+   */
+  const [shareRequest, setShareRequest] = useState<ShareRequest | null>(null);
+  const shareOpenRef = useRef(false);
+  const shareBusyRef = useRef(false);
+
+  /**
+   * 导入 Obsidian（M3 / FR-09）与飞书凭据设置（FR-11 进阶通道）。
+   * 三件套的形状与导出/分享完全一致，理由同上；两者都会把结果交给同一条 toast。
+   * 飞书设置卡是个例外：它的结果留在卡里（保存完通常紧接着要测连接），不出 toast。
+   */
+  const [obsidianRequest, setObsidianRequest] =
+    useState<ObsidianImportRequest | null>(null);
+  const obsidianOpenRef = useRef(false);
+  const obsidianBusyRef = useRef(false);
+
+  const [larkSettingsOpen, setLarkSettingsOpen] = useState(false);
+  const larkSettingsOpenRef = useRef(false);
+  const larkSettingsBusyRef = useRef(false);
 
   /**
    * 禅模式（3.3）。**刻意用组件内 state，而不是往 settings/uiState 里塞字段**：
@@ -2359,6 +2940,100 @@ export default function App() {
     // 左栏/大纲刚被藏起来，焦点很可能还留在它们上面：不还给阅读区就会"按 PgDn 不翻页"
     focusReading();
   }, [focusReading, setZen]);
+
+  /* ── 文件夹模式（F20 / 批次 5） ── */
+
+  /** 挂载文件夹：验证与落盘都在 store.mount 里，这里只负责失败时的警示条 */
+  const mountFolder = useCallback(
+    (root: string): void => {
+      void useFolderTreeStore
+        .getState()
+        .mount(root)
+        .catch((error: unknown) => {
+          console.warn("[app] mount folder failed", root, error);
+          showNotice({
+            kind: "danger",
+            message: t.notice.folderOpenFailed,
+            action: null,
+            autoDismiss: true,
+          });
+        });
+    },
+    [showNotice],
+  );
+
+  /** 入口一：选文件夹对话框（右键菜单「打开文件夹…」/ Ctrl+Shift+O / 空状态按钮共用） */
+  const openFolderMount = useCallback((): void => {
+    void openFolderDialog()
+      .then((picked) => {
+        if (picked !== null) {
+          mountFolder(picked);
+        }
+      })
+      .catch((error: unknown) => {
+        console.warn("[app] open folder dialog failed", error);
+      });
+  }, [mountFolder]);
+
+  /** F20 显式升级动作：把当前文档所在文件夹挂载为项目（绝不自动挂载，DG 5.3.1） */
+  const mountParentFolder = useCallback((): void => {
+    const docPath = useFileSessionStore.getState().path;
+    const parent = docPath === null ? null : parentOf(docPath);
+    if (parent !== null) {
+      mountFolder(parent);
+    }
+  }, [mountFolder]);
+
+  /** 最近文件夹入口（「打开文件夹 ▸」子菜单）：失效条目在点击失败时顺手剔除 */
+  const mountRecentFolder = useCallback(
+    (root: string): void => {
+      void useFolderTreeStore
+        .getState()
+        .mount(root)
+        .catch((error: unknown) => {
+          console.warn("[app] mount recent folder failed", root, error);
+          useSettingsStore.getState().removeRecentFolder(root);
+          showNotice({
+            kind: "danger",
+            message: t.notice.folderOpenFailed,
+            action: null,
+            autoDismiss: true,
+          });
+        });
+    },
+    [showNotice],
+  );
+
+  const closeFolder = useCallback((): void => {
+    void useFolderTreeStore.getState().unmount();
+  }, []);
+
+  const toggleTreeDir = useCallback((dirPath: string): void => {
+    useFolderTreeStore.getState().toggleDir(dirPath);
+  }, []);
+
+  const retryTreeDir = useCallback((dirPath: string): void => {
+    void useFolderTreeStore.getState().ensureLoaded(dirPath);
+  }, []);
+
+  /** 启动恢复：settings 落地且有根时重放上次的树（展开集 + 监听），只跑一次 */
+  const folderRestoredRef = useRef(false);
+  useEffect(() => {
+    if (!settingsLoaded || folderRestoredRef.current) {
+      return;
+    }
+    folderRestoredRef.current = true;
+    if (useSettingsStore.getState().folderRoot !== null) {
+      void useFolderTreeStore.getState().restore();
+    }
+  }, [settingsLoaded]);
+
+  /** 打开文件后在树里 reveal（store 内部自会判断路径是否在根下） */
+  useEffect(() => {
+    if (path !== null) {
+      void useFolderTreeStore.getState().revealPath(path);
+    }
+  }, [path]);
 
   /* ── 左栏顺手化（3.4） ── */
 
@@ -2537,6 +3212,30 @@ export default function App() {
       }
       const anchor = target.closest("a[href]");
       if (!(anchor instanceof HTMLAnchorElement)) {
+        // 正文图片 → 灯箱。刻意排在链接分支**之后**：图片被包在链接里时，
+        // 用户点它是想去那个链接，不是看大图。
+        // 只认真正的 <img>：外链图的「点击加载」占位块要留给它自己的按钮。
+        if (
+          event.type === "click" &&
+          target instanceof HTMLImageElement &&
+          target.closest("[data-external-image]") === null
+        ) {
+          const src = target.currentSrc || target.getAttribute("src") || "";
+          if (src !== "") {
+            event.preventDefault();
+            const rect = target.getBoundingClientRect();
+            lightboxOrigin.current = {
+              alt: target.getAttribute("alt") ?? "",
+              rect: {
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+              },
+            };
+            useUiStateStore.getState().setLightboxSrc(src);
+          }
+        }
         return;
       }
       // 中键：等同左键的分发，但必须挡住 WebView 的「新窗口 / 自动滚动」默认行为
@@ -2637,6 +3336,350 @@ export default function App() {
     });
   }, [aboutInfo]);
 
+  /* ── 导出与打印（M2 / FR-07 / FR-08 / FR-17） ── */
+
+  const dismissExportToast = useCallback(() => {
+    setExportToast(null);
+  }, []);
+
+  const pushExportToast = useCallback(
+    (
+      kind: ExportToastState["kind"],
+      message: string,
+      actions: readonly ExportToastAction[],
+    ) => {
+      exportToastSeq.current += 1;
+      setExportToast({ id: exportToastSeq.current, kind, message, actions });
+    },
+    [],
+  );
+
+  /**
+   * 唤起导出对话框。无文档时什么也不做——菜单与顶栏钮那一层已经置灰了，
+   * 这里只是不信任调用方的第二道闸（快捷键将来接进来时同样走这条路）。
+   */
+  const openExportDialog = useCallback((kind: ExportKind) => {
+    const target = useFileSessionStore.getState().path;
+    if (target === null) {
+      return;
+    }
+    exportOpenRef.current = true;
+    exportBusyRef.current = false;
+    setExportRequest({ kind, sourcePath: target });
+  }, []);
+
+  const closeExportDialog = useCallback(() => {
+    exportOpenRef.current = false;
+    exportBusyRef.current = false;
+    setExportRequest(null);
+    // 卡片关掉后焦点会掉到 body，键盘翻页当场失灵——和右键菜单一样必须归还
+    focusReading();
+  }, [focusReading]);
+
+  const handleExportBusy = useCallback((busy: boolean) => {
+    exportBusyRef.current = busy;
+  }, []);
+
+  /**
+   * 导出结束：关卡 + 出 toast（DG 6.6「已导出 · 打开文件 / 打开所在文件夹」）。
+   *
+   * 「打开文件」走系统关联程序；失败时**退回到「在资源管理器中显示」**而不是弹第二条错误——
+   * 用户的意图是"看到产物"，退一步定位到它同样满足意图。（opener 插件的 path scope
+   * 目前只授权了 .md 五个扩展名，产物是 .html/.pdf，这条退路因此不是纯理论。）
+   */
+  const handleExportDone = useCallback(
+    (outcome: ExportOutcome) => {
+      closeExportDialog();
+
+      if (!outcome.ok) {
+        pushExportToast(
+          "danger",
+          `${t.exportDialog.failed}：${outcome.message}`,
+          [],
+        );
+        return;
+      }
+
+      const output = outcome.output;
+      const reveal = (): void => {
+        void revealInExplorer(output).catch((error: unknown) => {
+          console.warn("[app] reveal export output failed", error);
+        });
+      };
+      pushExportToast("success", t.exportDialog.done(baseNameOf(output)), [
+        {
+          label: t.exportDialog.openFile,
+          run: () => {
+            void openWithDefaultApp(output).catch((error: unknown) => {
+              console.warn("[app] open export output failed", error);
+              reveal();
+            });
+          },
+        },
+        { label: t.common.openFolder, run: reveal },
+      ]);
+    },
+    [closeExportDialog, pushExportToast],
+  );
+
+  /* ── M3 三张卡共用的结果 toast ── */
+
+  /**
+   * 分享 / 导入 Obsidian 的结局 → 一条 toast（两者的 Outcome 与 ExportOutcome 同形，
+   * 所以复用同一个 ExportToast，不另造第二套提示条）。
+   *
+   *   有 output（另存长图、导入 Obsidian）→ 给「打开文件 / 打开所在文件夹」两个动作；
+   *   没有 output（复制富文本 / 长图进剪贴板）→ 只报一句话。给一个点了必然失败的
+   *   「打开文件」比不给更糟。
+   *
+   * 失败文案不无脑加前缀：卡片在"确实说不出原因"时回的就是那句通用失败文案，
+   * 再前缀一次会变成「分享失败：分享失败」。有具体原因（AppError 的中文 message）才加。
+   */
+  const pushOutcomeToast = useCallback(
+    (outcome: OutputOutcome, failedPrefix: string) => {
+      if (!outcome.ok) {
+        pushExportToast(
+          "danger",
+          outcome.message === failedPrefix
+            ? outcome.message
+            : `${failedPrefix}：${outcome.message}`,
+          [],
+        );
+        return;
+      }
+
+      const output = outcome.output;
+      if (output === undefined) {
+        pushExportToast("success", outcome.message, []);
+        return;
+      }
+
+      const reveal = (): void => {
+        void revealInExplorer(output).catch((error: unknown) => {
+          console.warn("[app] reveal outcome output failed", error);
+        });
+      };
+      pushExportToast("success", outcome.message, [
+        {
+          label: t.exportDialog.openFile,
+          run: () => {
+            // opener 的 path scope 只授权了 .md，打不开 PNG 时退回"定位到它"——
+            // 用户的意图是"看到产物"，退一步同样满足（与导出那条同一口径）
+            void openWithDefaultApp(output).catch((error: unknown) => {
+              console.warn("[app] open outcome output failed", error);
+              reveal();
+            });
+          },
+        },
+        { label: t.common.openFolder, run: reveal },
+      ]);
+    },
+    [pushExportToast],
+  );
+
+  /* ── 分享（M3 / FR-10 / FR-11 / FR-18） ── */
+
+  /**
+   * 唤起分享面板。无文档时什么也不做——菜单与顶栏钮那一层已经置灰了，
+   * 这里只是不信任调用方的第二道闸（与 openExportDialog 同一口径）。
+   */
+  const openShareDialog = useCallback(() => {
+    const target = useFileSessionStore.getState().path;
+    if (target === null) {
+      return;
+    }
+    shareOpenRef.current = true;
+    shareBusyRef.current = false;
+    setShareRequest({ sourcePath: target });
+  }, []);
+
+  const closeShareDialog = useCallback(() => {
+    shareOpenRef.current = false;
+    shareBusyRef.current = false;
+    setShareRequest(null);
+    // 卡片关掉后焦点会掉到 body，键盘翻页当场失灵——和导出卡一样必须归还
+    focusReading();
+  }, [focusReading]);
+
+  const handleShareBusy = useCallback((busy: boolean) => {
+    shareBusyRef.current = busy;
+  }, []);
+
+  /** 分享结束：关卡 + 出 toast（「另存长图…」带产物，复制类不带，见 pushOutcomeToast） */
+  const handleShareDone = useCallback(
+    (outcome: ShareOutcome) => {
+      closeShareDialog();
+      pushOutcomeToast(outcome, t.shareDialog.failed);
+    },
+    [closeShareDialog, pushOutcomeToast],
+  );
+
+  /* ── 导入 Obsidian（M3 / FR-09） ── */
+
+  const openObsidianDialog = useCallback(() => {
+    const target = useFileSessionStore.getState().path;
+    if (target === null) {
+      return;
+    }
+    obsidianOpenRef.current = true;
+    obsidianBusyRef.current = false;
+    setObsidianRequest({ sourcePath: target });
+  }, []);
+
+  const closeObsidianDialog = useCallback(() => {
+    obsidianOpenRef.current = false;
+    obsidianBusyRef.current = false;
+    setObsidianRequest(null);
+    focusReading();
+  }, [focusReading]);
+
+  const handleObsidianBusy = useCallback((busy: boolean) => {
+    obsidianBusyRef.current = busy;
+  }, []);
+
+  /**
+   * 导入结束：关卡 + 出 toast。产物是笔记在 Vault 里的绝对路径——
+   * 这是本应用唯一会往用户目录写东西的功能，「打开所在文件夹」让人当场核对写到哪儿了，
+   * 比一句「已导入」有用得多。
+   */
+  const handleObsidianDone = useCallback(
+    (outcome: ObsidianImportOutcome) => {
+      closeObsidianDialog();
+      pushOutcomeToast(outcome, t.obsidianDialog.failed);
+    },
+    [closeObsidianDialog, pushOutcomeToast],
+  );
+
+  /* ── 在浏览器中打开（右键菜单「打开方式」组） ── */
+
+  /**
+   * 三步：算临时落点 → 导出单文件 HTML → 交系统默认程序打开。
+   *
+   * 为什么必须是 `single-file`：产物自包含、没有伴生 `_files` 目录，临时目录里只有
+   * 一个文件，后端那套「只删单个 .html、超期才删」的清理策略才成立；资源目录模式
+   * 会在 %TEMP% 留下一棵清理不到的树。
+   *
+   * 为什么这里 `overwrite: true` 是对的：落点是我们自己算出来的临时文件（同一篇恒定
+   * 同名），同一篇反复预览就是要覆盖它。这与导出对话框那条「无条件传 true 等于拆掉
+   * 安全网」的纪律不冲突——那条针对的是**用户选定的路径**。
+   */
+  const openInBrowserPreview = useCallback(() => {
+    const path = useFileSessionStore.getState().path;
+    if (path === null) {
+      return;
+    }
+    pushExportToast("info", t.browserPreview.preparing, []);
+    void (async () => {
+      try {
+        const output = await browserPreviewPath(path);
+        await runHtmlExport(path, output, "single-file", true);
+        await openInBrowser(output);
+        pushExportToast("success", t.browserPreview.opened, []);
+      } catch (error: unknown) {
+        console.warn("[app] open in browser failed", error);
+        const message = describeError(error).message;
+        // 唯一可预期的失败：图多的长文撞单文件 50MB 上限。裸报错在这里等于没说，
+        // 得指出正式导出的「HTML + 资源目录」才是这类文档的出路。
+        pushExportToast(
+          "danger",
+          message.startsWith(ERR_EXPORT_TOO_LARGE)
+            ? t.browserPreview.tooLarge
+            : `${t.browserPreview.failed}：${message}`,
+          [],
+        );
+      }
+    })();
+  }, [pushExportToast]);
+
+  /* ── 飞书凭据设置（M3 / FR-11 进阶通道） ── */
+
+  const openLarkSettings = useCallback(() => {
+    larkSettingsOpenRef.current = true;
+    larkSettingsBusyRef.current = false;
+    setLarkSettingsOpen(true);
+  }, []);
+
+  const closeLarkSettings = useCallback(() => {
+    larkSettingsOpenRef.current = false;
+    larkSettingsBusyRef.current = false;
+    setLarkSettingsOpen(false);
+    focusReading();
+  }, [focusReading]);
+
+  /* ── 设置页（左栏底部「设置」，接上四个此前无入口的设置项） ── */
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const openSettingsDialog = useCallback(() => {
+    setSettingsOpen(true);
+  }, []);
+
+  const closeSettingsDialog = useCallback(() => {
+    setSettingsOpen(false);
+    focusReading();
+  }, [focusReading]);
+
+  /**
+   * 设置页 →「打开飞书设置…」。
+   *
+   * 必须**先关设置卡再开飞书卡**：两张卡同时在场会有两个焦点陷阱互抢 Tab，
+   * Esc 也说不清该关哪一张。关掉飞书卡后不自动退回设置卡——用户点进去就是奔着
+   * 配凭据来的，配完还被弹回上一层是多余的一步。
+   */
+  const openLarkFromSettings = useCallback(() => {
+    setSettingsOpen(false);
+    openLarkSettings();
+  }, [openLarkSettings]);
+
+  const handleLarkSettingsBusy = useCallback((busy: boolean) => {
+    larkSettingsBusyRef.current = busy;
+  }, []);
+
+  /**
+   * 凭据状态变化（保存 / 解除 / 测试各回调一次）。
+   *
+   * **当前刻意什么都不做**：卡片自己已经把状态显示在界面上，而 App 这边还没有任何
+   * 需要据此开关的入口——「分享 ▸ 飞书」走的是富文本粘贴那条（不需要凭据），
+   * `importToLark` 那条 API 通道尚无菜单项。攒一份没人读的镜像状态只会变成误导性的死代码。
+   * 等「导入飞书云文档」入口落地，把它接到那个入口的 disabled 判据上即可。
+   */
+  const handleLarkStatus = useCallback((_status: LarkCredentialStatus) => {
+    // 见上：暂无消费方，刻意留空而不是存一份没人读的状态
+  }, []);
+
+  /**
+   * 打印（FR-17 / Ctrl+P）：直接调后端的系统打印对话框，不经导出卡片——
+   * 打印没有"导到哪儿"要选，多插一张卡只是多一次点击。
+   * 后端尚未实装时会 reject，错误原样进 toast（AppError 的 message 是中文且面向用户）。
+   */
+  const printCurrent = useCallback(() => {
+    const path = useFileSessionStore.getState().path;
+    if (path === null) {
+      return;
+    }
+    // 任何一张模态卡开着时都不接 Ctrl+P。除了"模态期间快捷键静默让位"这条常规，
+    // 还有一条硬理由：打印、PDF 导出与长图截图共用同一套隐藏窗口 / CDP 通道，
+    // 两件事同时进行只会互相踩。
+    if (
+      exportOpenRef.current ||
+      shareOpenRef.current ||
+      obsidianOpenRef.current ||
+      larkSettingsOpenRef.current
+    ) {
+      return;
+    }
+    // 传的是**文档路径**：隐藏打印窗口拿它自己读原文并渲染（主窗口的 DOM 印不得，
+    // 那会把左栏顶栏一起印进去）
+    void printDocument(path).catch((error: unknown) => {
+      console.warn("[app] printDocument failed", error);
+      pushExportToast(
+        "danger",
+        `${t.exportDialog.printFailed}：${describeError(error).message}`,
+        [],
+      );
+    });
+  }, [pushExportToast]);
+
   /** 失效路径回填（1.8）：探测逻辑在 store，这里只负责挑时机 */
   const refreshMissing = useCallback(() => {
     void useRecentFilesStore.getState().refreshMissing();
@@ -2723,10 +3766,25 @@ export default function App() {
 
     // 冷启动（双击 .md / 命令行传参）：后端在 setup 阶段已暂存路径，
     // 事件不会重放，必须由挂载完成的前端主动取一次。
+    //
+    // 首启引导挂在这条链的末尾，且**只在没有待打开文件时**才弹：用户双击 .md 进来
+    // 是要看那篇文档的，迎面盖一张向导卡属于典型的"应用比用户更知道他想干嘛"。
+    // 没有文件时才是介绍自己的合适时机（那一屏本来就是空状态页）。
+    // 编辑器清单：失败不打扰用户，子菜单退化成只有「其他程序…」，仍然可用
+    void listEditors()
+      .then((found) => {
+        setEditors(found);
+      })
+      .catch(warn);
+
     void takePendingOpen()
       .then((pending) => {
         if (pending) {
           void useFileSessionStore.getState().openPath(pending);
+          return;
+        }
+        if (shouldShowFirstRunGuide()) {
+          setGuideOpen(true);
         }
       })
       .catch(warn);
@@ -2745,6 +3803,13 @@ export default function App() {
           dismissNotice();
         }
       });
+    })
+      .then(track)
+      .catch(warn);
+
+    // 已挂载文件夹结构变化（F20）：只重列受影响的已加载层，store 内部判根
+    void onDirTreeChanged((dirs) => {
+      void useFolderTreeStore.getState().refreshLayers(dirs);
     })
       .then(track)
       .catch(warn);
@@ -2776,8 +3841,12 @@ export default function App() {
       if (payload.phase === "enter") {
         // 不支持的类型也出遮罩，只是换 danger 描边 + 文案，不再静默（DG 6.4-9）。
         // 拿不到路径（部分拖拽源在 enter 阶段不给）时按「可能可以」处理，不吓唬用户。
+        // 无扩展名的路径可能是文件夹（F20 入口之二），同样按「可能可以」。
         setDragSupported(
-          payload.paths.length === 0 || payload.paths.some(isSupportedPath),
+          payload.paths.length === 0 ||
+            payload.paths.some(
+              (item) => isSupportedPath(item) || maybeFolderPath(item),
+            ),
         );
         setDragOverlay(true);
         return;
@@ -2791,6 +3860,15 @@ export default function App() {
         const target = payload.paths.find(isSupportedPath);
         if (target !== undefined) {
           void useFileSessionStore.getState().openPath(target);
+          return;
+        }
+        // 没有可打开的文件：只有「像文件夹」（无扩展名）的路径才试挂载（F20）。
+        // 拖入 .png/.txt 这类明显是文件的路径不该得到「无法打开该文件夹」的
+        // 文不对题报错（复审确认项）——它们落到下面准确的 dropUnsupported。
+        // 代价：带点的目录名拖入会被误判为文件，与 enter 阶段遮罩同一口径。
+        const folder = payload.paths.find(maybeFolderPath);
+        if (folder !== undefined) {
+          mountFolder(folder);
           return;
         }
         showNotice({
@@ -2810,7 +3888,7 @@ export default function App() {
         unlisten();
       }
     };
-  }, [dismissNotice, flashRefreshed, setDragOverlay, showNotice]);
+  }, [dismissNotice, flashRefreshed, mountFolder, setDragOverlay, showNotice]);
 
   /* ── 快捷键（只实现 DG 6.5 总表里版本=M1 且外壳已具备的项） ── */
 
@@ -2825,8 +3903,42 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent): void => {
       const key = event.key.toLowerCase();
 
-      // Esc 语义链（DG 6.5）：关于对话框 → 过滤框有值则清空并失焦 → 逐层收浮层 → 无动作
+      // Esc 语义链（DG 6.5）：模态卡（分享 / 导入 Obsidian / 飞书设置 / 导出）
+      // → 关于对话框 → 过滤框有值则清空并失焦 → 逐层收浮层 → 无动作。
+      // 四张模态卡同一时刻只可能开一张（彼此的遮罩挡住了对方的入口），排列顺序无实际竞争。
       if (event.key === "Escape") {
+        if (obsidianOpenRef.current) {
+          // 导入进行中一律吃掉 Esc：文件可能已经拷了一半，关掉卡片停不下后端
+          event.preventDefault();
+          if (!obsidianBusyRef.current) {
+            closeObsidianDialog();
+          }
+          return;
+        }
+        if (larkSettingsOpenRef.current) {
+          event.preventDefault();
+          if (!larkSettingsBusyRef.current) {
+            closeLarkSettings();
+          }
+          return;
+        }
+        if (shareOpenRef.current) {
+          // 生成中一律吃掉 Esc，理由同导出：长图要跑好几秒且后端停不下来，
+          // 面板是这一刻唯一的进度反馈，关了就只剩干等
+          event.preventDefault();
+          if (!shareBusyRef.current) {
+            closeShareDialog();
+          }
+          return;
+        }
+        if (exportOpenRef.current) {
+          // 导出进行中一律吃掉 Esc：卡片是这一刻唯一的进度反馈，关了就只剩干等
+          event.preventDefault();
+          if (!exportBusyRef.current) {
+            closeExportDialog();
+          }
+          return;
+        }
         if (aboutOpenRef.current) {
           event.preventDefault();
           closeAbout();
@@ -2906,6 +4018,19 @@ export default function App() {
         focusRecentFilter();
         return;
       }
+      // Ctrl+Shift+O：打开文件夹（F20 / DG 6.5 已登记）。必须排在 Ctrl+O 之前判 shift
+      if (key === "o" && event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        openFolderMount();
+        return;
+      }
+      // Ctrl+P：打印（FR-17 / DG 6.5 已登记）。WebView2 自带的打印快捷键在批次 1 已关掉，
+      // 这里 preventDefault 只是把这条路彻底钉死在我们自己的实现上
+      if (key === "p" && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        printCurrent();
+        return;
+      }
       if (key === "o" && event.altKey) {
         event.preventDefault();
         toggleOutline();
@@ -2928,9 +4053,15 @@ export default function App() {
     };
   }, [
     closeAbout,
+    closeExportDialog,
+    closeLarkSettings,
+    closeObsidianDialog,
+    closeShareDialog,
     focusReading,
     focusRecentFilter,
     openFile,
+    openFolderMount,
+    printCurrent,
     setZen,
     toggleOutline,
     toggleSidebar,
@@ -2997,12 +4128,10 @@ export default function App() {
        * 动作在这里现场绑定：选区文本必须是**右键那一刻**的快照，
        * 菜单打开期间焦点会移进菜单，晚一步去读选区就可能已经变了。
        *
-       * 交叉类型里的 toggleZen 是 3.3 的过渡措施：菜单条目层
-       * （components/contextMenuItems.ts，本批次不归本文件改）要把「禅模式」从置灰
-       * 点亮成 `run: actions.toggleZen`，而 ContextMenuActions 接口就在那个文件里。
-       * 先用交叉类型把字段带上，接口补完后这里的交叉自然退化成冗余，无需再改一次。
+       * toggleZen 此前靠交叉类型临时挂在这里（3.3 的过渡措施），本批次
+       * ContextMenuActions 已把它与导出/打印一起收进接口，交叉类型随之删掉。
        */
-      const actions: ContextMenuActions & { readonly toggleZen: () => void } = {
+      const actions: ContextMenuActions = {
         toggleZen,
         copyText: (text) => {
           void writeClipboard(text);
@@ -3019,8 +4148,34 @@ export default function App() {
         revealPath: (filePath) => {
           void revealInExplorer(filePath).catch(warn);
         },
+        // 「用其他编辑器打开源文件」：必须弹系统「打开方式」，不能用默认程序打开——
+        // 默认程序很可能就是本应用（我们还在引导用户这么设），那样点了等于没反应。
+        // 失败也必须让用户看见：这条链路曾经只 console.warn，用户看到的就是「点了没反应」。
+        editors,
+        // 失败必须让用户看见：这条链路上一版只 console.warn，用户看到的就是「点了没反应」
+        openInEditor: (editorPath) => {
+          const filePath = useFileSessionStore.getState().path;
+          if (filePath === null) {
+            return;
+          }
+          void invokeOpenInEditor(editorPath, filePath).catch((error: unknown) => {
+            warn(error);
+            pushExportToast(
+              "danger",
+              `${t.contextMenu.openWithEditor}：${describeError(error).message}`,
+              [],
+            );
+          });
+        },
         openWithDefaultApp: (filePath) => {
-          void openWithDefaultApp(filePath).catch(warn);
+          void openWithDialog(filePath).catch((error: unknown) => {
+            warn(error);
+            pushExportToast(
+              "danger",
+              `${t.contextMenu.openWithEditor}：${describeError(error).message}`,
+              [],
+            );
+          });
         },
         openExternalUrl: (url) => {
           void openExternal(url).catch(warn);
@@ -3047,7 +4202,24 @@ export default function App() {
         removeRecent: (filePath) => {
           removeRecentEntry(filePath);
         },
+        // 导出与打印（M2）：菜单只发信号，选项与输出路径都在 ExportDialog 里
+        exportDocument: (kind) => {
+          openExportDialog(kind);
+        },
+        // 分享（M3）：同理，「发到聊天窗口 / 粘进富文本编辑器」的分组在 ShareDialog 里
+        openShare: openShareDialog,
+        openInBrowser: openInBrowserPreview,
+        // 导入 Obsidian（M3 / FR-09）：目标 Vault、子目录、冲突策略都在对话框里问
+        importObsidian: openObsidianDialog,
+        printDocument: printCurrent,
         showAbout,
+        // 文件夹模式（F20）：入口与显式升级动作，两者都最终落到 folderTree.mount
+        openFile,
+        openFolderMount,
+        mountParentFolder,
+        // 每次弹菜单现读：最近文件夹变化不该等下一次 effect 重挂
+        recentFolders: useSettingsStore.getState().recentFolders,
+        mountRecentFolder,
       };
 
       const base = {
@@ -3061,8 +4233,20 @@ export default function App() {
       let label: string | null = null;
       let items: readonly MenuNode[] | null = null;
 
+      // 树条目（F20 / 附录 A.4）排在最近条目之前：两种行不会嵌套，先到先得只是习惯
+      const treeRow = target.closest<HTMLElement>("[data-tree-path]");
       const recentRow = target.closest<HTMLElement>("[data-recent-path]");
-      if (recentRow !== null) {
+      if (treeRow !== null) {
+        const rowPath = treeRow.dataset.treePath ?? "";
+        if (rowPath !== "") {
+          label = t.contextMenu.labelTree;
+          items = buildTreeMenu({
+            path: rowPath,
+            isDir: treeRow.dataset.treeDir === "true",
+            actions,
+          });
+        }
+      } else if (recentRow !== null) {
         const rowPath = recentRow.dataset.recentPath ?? "";
         const file = useRecentFilesStore
           .getState()
@@ -3071,6 +4255,11 @@ export default function App() {
           label = t.contextMenu.labelRecent;
           items = buildRecentMenu({ file, actions });
         }
+      } else if (target.closest("[data-sidebar-shell]") !== null) {
+        // 左栏空白区（A.5，批次 5.5）：行命中已在上面两个分支截走，
+        // 走到这里的是分组标题/留白/底部设置钮一带——给「打开东西」的两个入口
+        label = t.contextMenu.labelSidebar;
+        items = buildSidebarMenu({ actions });
       } else if (target.closest("[data-reading-root]") !== null) {
         // 先把焦点确定地放到阅读区：菜单关闭时要「归还触发元素」，
         // 而右键落在正文上时焦点可能还在别处（甚至是 body），归还就成了空转，
@@ -3120,7 +4309,15 @@ export default function App() {
   }, [
     focusReading,
     openDocumentAt,
+    openExportDialog,
+    openObsidianDialog,
     openPath,
+    openShareDialog,
+    mountParentFolder,
+    mountRecentFolder,
+    openFile,
+    openFolderMount,
+    printCurrent,
     removeRecentEntry,
     showAbout,
     toggleRecentPinned,
@@ -3332,6 +4529,33 @@ export default function App() {
     flatRecentPathsRef.current = flatRecentPaths;
   }, [flatRecentPaths]);
 
+  /* F20：树视图的渲染行 + 键盘导航序列（node 行的路径，与 DOM 顺序同源）。
+     过滤词与最近视图共用同一个框——两个视图互斥，语义不打架。 */
+  const treeRows = useMemo(
+    () => flattenTree(folderRoot, treeLayers, folderExpanded, recentFilter),
+    [folderRoot, treeLayers, folderExpanded, recentFilter],
+  );
+  const treeNodePaths = useMemo(
+    () =>
+      treeRows.flatMap((row) => (row.kind === "node" ? [row.child.path] : [])),
+    [treeRows],
+  );
+  /** 栏头显示的文件夹名：根路径最后一段；盘根（C:\）就显示盘符本身 */
+  const folderName = useMemo(() => {
+    if (folderRoot === null) {
+      return "";
+    }
+    const trimmed = folderRoot.replace(/[\\/]+$/, "");
+    const index = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
+    return index >= 0 && index < trimmed.length - 1
+      ? trimmed.slice(index + 1)
+      : folderRoot;
+  }, [folderRoot]);
+  const treeActive = sidebarView === "tree" && folderRoot !== null;
+  /** 根层已进缓存（含 error 态——那会渲染成可重试的 notice 行，不算「读取中」） */
+  const treeRootReady =
+    folderRoot === null || treeLayers.has(normalizePath(folderRoot));
+
   // 读取完成前先用文件名顶着，避免顶栏闪一下「未打开文件」
   const displayTitle =
     session.title !== ""
@@ -3373,6 +4597,7 @@ export default function App() {
         onToggleSidebar={toggleSidebar}
         onToggleOutline={toggleOutline}
         onOpenFile={openFile}
+        onOpenFolder={openFolderMount}
       />
 
       {notice === null ? null : (
@@ -3383,7 +4608,9 @@ export default function App() {
         />
       )}
 
-      <div className="flex min-h-0 flex-1">
+      {/* relative 是给大纲浮层做定位基准的：窗口窄到放不下三栏时，
+          大纲会从"占一列"改成"覆盖在正文之上"，见 OutlinePanel 的 max-[1100px]: 变体 */}
+      <div className="relative flex min-h-0 flex-1">
         {/* 禅模式只是"这一会儿不渲染"，settings.sidebarCollapsed 半个字都没动，
             所以退出时回到的是用户自己那份显隐状态（3.3） */}
         {sidebarCollapsed || zenMode ? null : (
@@ -3394,13 +4621,37 @@ export default function App() {
             currentPath={path}
             missingPaths={missingPaths}
             collapsedGroups={collapsedGroups}
-            flatPaths={flatRecentPaths}
+            flatPaths={treeActive ? treeNodePaths : flatRecentPaths}
             reveal={recentReveal}
+            view={sidebarView}
+            folderRoot={folderRoot}
+            folderName={folderName}
+            treeRows={treeRows}
+            treeReady={treeRootReady}
+            onSwitchView={setSidebarView}
+            onToggleDir={toggleTreeDir}
+            onRetryDir={retryTreeDir}
+            onCloseFolder={closeFolder}
             onFilterChange={setRecentFilter}
             onToggleGroup={toggleRecentGroup}
             onOpen={openPath}
             onTogglePin={toggleRecentPinned}
             onOpenFile={openFile}
+            onOpenSettings={openSettingsDialog}
+            width={sidebarWidth}
+          />
+        )}
+
+        {/* 栏宽拖拽把手（M1 批次 4）。左栏收起或禅模式下不渲染——
+            没有栏可拖的时候留一条把手在那儿只会让人以为界面坏了。 */}
+        {sidebarCollapsed || zenMode ? null : (
+          <ResizeHandle
+            value={sidebarWidth}
+            min={SIDEBAR_WIDTH_MIN}
+            max={SIDEBAR_WIDTH_MAX}
+            onChange={setSidebarWidth}
+            side="left"
+            label={t.sidebar.resizeLabel}
           />
         )}
 
@@ -3414,9 +4665,14 @@ export default function App() {
           fontSize={fontSize}
           zoomPercent={zoomPercent}
           codeWrap={codeWrap}
+          readingWidth={readingWidth}
           silent={silentRefresh}
           isLarge={isLarge}
           onOpenFile={openFile}
+          onOpenFolder={openFolderMount}
+          onSetDefault={() => {
+            setGuideOpen(true);
+          }}
           onRetry={retry}
         />
 
@@ -3457,6 +4713,89 @@ export default function App() {
           info={aboutInfo}
           onOpenLogDir={openLogDir}
           onClose={closeAbout}
+        />
+      ) : null}
+
+      {/* 导出对话框（M2）：条件挂载即可——它不注册任何全局快捷键，
+          Esc 由 App 的语义链统一接管（导出进行中会被吃掉，见上文） */}
+      {exportRequest === null ? null : (
+        <ExportDialog
+          request={exportRequest}
+          onBusyChange={handleExportBusy}
+          onClose={closeExportDialog}
+          onDone={handleExportDone}
+        />
+      )}
+
+      {/* 分享面板（M3）：条件挂载即可——它不注册任何全局快捷键，
+          Esc 由 App 的语义链统一接管（生成中会被吃掉，见上文）。
+          backend 用模块级常量而非现造对象，理由见 SHARE_BACKEND 的注释。 */}
+      {shareRequest === null ? null : (
+        <ShareDialog
+          request={shareRequest}
+          backend={SHARE_BACKEND}
+          onBusyChange={handleShareBusy}
+          onClose={closeShareDialog}
+          onDone={handleShareDone}
+        />
+      )}
+
+      {/* 导入 Obsidian（M3 / FR-09）：唯一会往用户目录写东西的功能，
+          目标 Vault / 子目录 / 冲突策略三件事全在卡里问清楚再动手 */}
+      {obsidianRequest === null ? null : (
+        <ObsidianImportDialog
+          request={obsidianRequest}
+          onBusyChange={handleObsidianBusy}
+          onClose={closeObsidianDialog}
+          onDone={handleObsidianDone}
+        />
+      )}
+
+      {/* 设置页：左栏底部「设置」唤起。所有选项即时生效即时落盘，没有确定/取消——
+          这是偏好设置不是表单提交。Esc 由卡片自己在捕获阶段吃掉，不进 App 的语义链。 */}
+      {settingsOpen ? (
+        <SettingsDialog
+          onClose={closeSettingsDialog}
+          onOpenLark={openLarkFromSettings}
+        />
+      ) : null}
+
+      {/* 飞书凭据设置（M3 / FR-11 进阶通道）：由设置页里的「打开飞书设置…」转入。
+          它的结果**不出 toast**——保存完通常紧接着要测一次连接，反馈留在卡里才跟得上 */}
+      {larkSettingsOpen ? (
+        <LarkSettingsDialog
+          onBusyChange={handleLarkSettingsBusy}
+          onClose={closeLarkSettings}
+          onDone={handleLarkStatus}
+        />
+      ) : null}
+
+      {/* 导出结果 toast：对话框已经关了它还得活着，所以状态在 App 手上（DG 6.6）。
+          分享与导入 Obsidian 的结果走的是同一条（三者 Outcome 同形，不另造第二套） */}
+      {exportToast === null ? null : (
+        <ExportToast toast={exportToast} onDismiss={dismissExportToast} />
+      )}
+
+      {/* 图片灯箱（M1 批次 4）：正文点图放大。Esc 由 uiState.closeTopLayer 的层级链接管
+          （灯箱在最外层，先于查找条与大纲浮层关闭）。 */}
+      {lightboxSrc === null ? null : (
+        <ImageLightbox
+          src={lightboxSrc}
+          alt={lightboxOrigin.current?.alt}
+          originRect={lightboxOrigin.current?.rect ?? null}
+          onClose={() => {
+            useUiStateStore.getState().setLightboxSrc(null);
+          }}
+        />
+      )}
+
+      {/* 首启引导（F2）：首次运行自动弹一次，之后只能从空状态页的「设为默认查看器」再唤起。
+          Esc 由它在捕获阶段自己吃掉，App 的 Esc 语义链一个字都不用改。 */}
+      {guideOpen ? (
+        <FirstRunGuide
+          onClose={() => {
+            setGuideOpen(false);
+          }}
         />
       ) : null}
 

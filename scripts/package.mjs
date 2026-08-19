@@ -36,6 +36,47 @@ function fail(msg) {
   process.exit(1);
 }
 
+/**
+ * 校验安装包内容里确实带着本产品名 —— 文件名对不代表内容对。
+ *
+ * 2026-08-18 的事故正是：脚本挑错了源文件，但**改名后交付**，于是文件名写着
+ * MDNaonao、装起来却是「欢迎使用 MD Viewer 安装程序」。当时所有闸门都是绿的，
+ * 因为没有一道去看安装包里面写了什么。这道检查就是补那个洞。
+ *
+ * NSIS 的界面字符串是 UTF-16LE，所以按该编码搜；顺带扫一遍已知的历史旧名，
+ * 命中就直接判失败——那必然是陈旧产物。
+ */
+const LEGACY_PRODUCT_NAMES = ["MD Viewer", "MDViewer"];
+
+function assertInstallerBranding(installerPath, expectedName) {
+  const bytes = fs.readFileSync(installerPath);
+  const countOf = (text) => {
+    const needle = Buffer.from(text, "utf16le");
+    let found = 0;
+    let at = bytes.indexOf(needle);
+    while (at !== -1) {
+      found += 1;
+      at = bytes.indexOf(needle, at + needle.length);
+    }
+    return found;
+  };
+
+  if (countOf(expectedName) === 0) {
+    fail(
+      `安装包里找不到产品名「${expectedName}」：${path.basename(installerPath)}\n` +
+        "  文件名对、内容不对，几乎一定是拿到了陈旧产物。不要交付。",
+    );
+  }
+  for (const legacy of LEGACY_PRODUCT_NAMES) {
+    if (legacy !== expectedName && countOf(legacy) > 0) {
+      fail(
+        `安装包里出现历史旧名「${legacy}」：${path.basename(installerPath)}\n` +
+          "  这是改名前的产物，用户会在安装向导里看到旧名字。不要交付。",
+      );
+    }
+  }
+}
+
 /** 走 PowerShell 的 Compress-Archive：Windows 自带，免第三方 zip 依赖 */
 function zipDir(srcDir, zipPath) {
   fs.rmSync(zipPath, { force: true });
@@ -130,14 +171,41 @@ fs.rmSync(OUT_DIR, { recursive: true, force: true });
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
 // ── 4. 安装包：从 bundle 目录取出并统一命名 ──────────────────────
+//
+// 【这里出过一次真事故，2026-08-18】原来的写法是
+//     fs.readdirSync(nsisDir).find((f) => f.endsWith(".exe"))
+// ——取目录里**第一个** .exe。产品从 MDViewer 改名成 MDNaonao 后，bundle 目录里
+// 同时存在 `MD Viewer_0.1.0_x64-setup.exe`（改名前的陈旧产物）与新的
+// `MDNaonao_0.1.0_x64-setup.exe`；按字母序空格排在 N 前面，于是脚本挑中了旧包，
+// 再套上新文件名交付出去。用户装的时候看到的是「欢迎使用 MD Viewer 安装程序」。
+//
+// 两条教训都写成了代码：① 按**确切文件名**取，取不到就报错退出，绝不"找个像的"；
+// ② 交付前校验产物内容里真的含产品名（见下方 assertInstallerBranding）——
+// 文件名对不代表内容对，这次错的恰恰是内容。
 const nsisDir = path.join(RELEASE_DIR, "bundle", "nsis");
+// Tauri NSIS 的产物命名：`<productName>_<version>_x64-setup.exe`（注意是连字符 setup）
+const expectedSetup = `${productName}_${version}_x64-setup.exe`;
 let setupOut = null;
+
 if (fs.existsSync(nsisDir)) {
-  const setup = fs.readdirSync(nsisDir).find((f) => f.endsWith(".exe"));
-  if (setup) {
+  const entries = fs.readdirSync(nsisDir).filter((f) => f.endsWith(".exe"));
+  const stale = entries.filter((f) => f !== expectedSetup);
+  if (stale.length > 0) {
+    // 不静默删除别人的文件，但必须说出来：它们多半是改名/改版本前的残留
+    log(`⚠ bundle 目录里还有 ${stale.length} 个非本次产物，已忽略：${stale.join("、")}`);
+    log("  若确认无用可删除 src-tauri/target/release/bundle/nsis/ 下的旧文件");
+  }
+  if (entries.includes(expectedSetup)) {
     setupOut = path.join(OUT_DIR, `${productName}_${version}_x64_setup.exe`);
-    fs.copyFileSync(path.join(nsisDir, setup), setupOut);
+    fs.copyFileSync(path.join(nsisDir, expectedSetup), setupOut);
+    assertInstallerBranding(setupOut, productName);
     log(`安装包 → ${path.basename(setupOut)}（${humanSize(fs.statSync(setupOut).size)}）`);
+  } else if (entries.length > 0) {
+    fail(
+      `bundle 目录里没有 ${expectedSetup}，只有：${entries.join("、")}。\n` +
+        "  这通常意味着本次构建没跑成功、或 productName/version 与产物对不上。\n" +
+        "  绝不拿别的 exe 顶替——上一次那么做的结果是交付了改名前的安装包。",
+    );
   }
 }
 if (!setupOut) {

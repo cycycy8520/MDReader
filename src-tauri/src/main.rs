@@ -58,10 +58,19 @@ fn main() {
             mdnaonao_lib::files::reveal_in_explorer,
             mdnaonao_lib::files::watch_file,
             mdnaonao_lib::files::unwatch_file,
-            // export
-            mdnaonao_lib::export::export_html,
+            // dirtree（F20 文件夹模式）：单层懒加载枚举 + 目录递归监听。
+            // 与 files 的单文件监听是两套独立槽位，互不替换。
+            mdnaonao_lib::dirtree::list_dir_children,
+            mdnaonao_lib::dirtree::watch_dir,
+            mdnaonao_lib::dirtree::unwatch_dir,
+            // export（PDF 与系统打印对话框；两者都经隐藏打印窗口渲染）
             mdnaonao_lib::export::export_pdf,
             mdnaonao_lib::export::print_document,
+            // export_html（FR-07）：正文由前端渲染成 payload，后端只做路径重写与落盘。
+            // 注意与 export 模块**不可并列同名命令** —— generate_handler! 用路径最后
+            // 一段做命令名，两个 export_html 会生成重复的 match 分支，编译期即失败。
+            mdnaonao_lib::export_html::export_html,
+            mdnaonao_lib::export_html::export_html_conflict,
             // capture
             mdnaonao_lib::capture::capture_long_image,
             // share
@@ -76,14 +85,34 @@ fn main() {
             // shell_integ（只读检测 + 额外右键动词）
             mdnaonao_lib::shell_integ::query_default_app,
             mdnaonao_lib::shell_integ::open_default_apps_settings,
+            // 「在浏览器中打开」两步：先取临时落点，导出后再交系统默认程序打开。
+            // open_in_browser 自带 .html/.htm 扩展名白名单——那是这条链路上唯一的检查
+            // （自家 command 不走 ACL，opener 的 Rust 自由函数也绕开插件 scope）。
+            mdnaonao_lib::shell_integ::browser_preview_path,
+            mdnaonao_lib::shell_integ::open_in_browser,
+            // 「用其他编辑器打开源文件」：弹系统「打开方式」，而不是用默认程序打开
+            // （默认程序很可能就是本应用，那样点了等于没反应）
+            mdnaonao_lib::shell_integ::open_with_dialog,
+            // 「用其他编辑器打开 ▸」：探测本机已装的编辑器并直接拉起。
+            // open_in_editor 内部会重新探测一遍做白名单校验——前端递来的 exe 路径
+            // 只是 UI 缓存不是凭据，原样执行就等于「以本应用身份运行任意程序」。
+            mdnaonao_lib::shell_integ::list_editors,
+            mdnaonao_lib::shell_integ::open_in_editor,
             mdnaonao_lib::shell_integ::register_extra_verbs,
             mdnaonao_lib::shell_integ::unregister_extra_verbs,
             // cmdline：前端挂载后取走冷启动待打开的文件（双击 .md / 命令行传参）
             mdnaonao_lib::cmdline::take_pending_open,
+            // 无 UI 动作（--action）的作业描述：隐藏渲染窗口挂载后据此知道该渲染哪一篇。
+            // 与 take_pending_open 不同，本命令**不消费**，可重复问。
+            mdnaonao_lib::cmdline::headless_job,
             // settings
             mdnaonao_lib::settings::load_settings,
             mdnaonao_lib::settings::save_settings,
             mdnaonao_lib::settings::save_lark_credential,
+            // 飞书凭据的只读状态与解绑。状态对象永不含 appSecret/token（settings.rs 有单测钉死），
+            // 前端拿它渲染「已配置 / 未配置 + 打码 appId」，绝不把密钥读回界面。
+            mdnaonao_lib::settings::lark_credential_status,
+            mdnaonao_lib::settings::clear_lark_credential,
             // 版本号 / 便携标志 / 数据根目录：右键菜单「关于」的数据源（附录 A.1）。
             // 前端拿不到这三样——版本只在 Cargo.toml，便携与数据根只有后端探测得出。
             mdnaonao_lib::settings::app_info,

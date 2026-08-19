@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "print-window",
+  "description": "导出/打印专用隐藏窗口（label \"print\"）的权限集。这扇窗只做一件事：渲染正文，然后把结果交出去。[core:default] 提供 invoke 与 event —— 其中 event 的 emit 是关键：PRINT_READY 与 HEADLESS_EXPORT_DONE 都靠它回报给 Rust，而 emit 是插件命令（plugin:event|emit），default.json 的 windows 只写了 main，不给本窗口单独授权就会被 ACL 拒绝，表现为「导出永远超时」。[dialog:*] [clipboard-manager:*] [opener:*] 一律不给：本窗口没有用户交互，任何对外能力都是纯粹的攻击面。注意自家 #[tauri::command]（read_markdown / export_html 等）不受 ACL 约束 —— 本项目没有 app ACL manifest（无 src-tauri/permissions/ 目录），Tauri 2.11 在该情况下不对应用自身命令做权限检查，因此无需也无法在此为它们添加条目。",
+  "windows": [
+    "print"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}

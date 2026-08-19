@@ -40,3 +40,10 @@ tmp/
 
 # 交付产物（pnpm package 产出，不入库）
 /release/
+
+# test-corpus 图片资源：二进制不入库，用 pnpm gen:corpus-assets 生成
+# （README 第 4 节列了清单；不生成的话 full-gfm.md 第 10 节四个用例全是破图，
+#  其中 10.2「中文 + 空格路径」是 DG 点名的头号坑，缺图等于那条路径从没被验证过）
+test-corpus/assets/
+test-corpus/assets-cn path/*.png
+test-corpus/assets-cn path/子 目录/

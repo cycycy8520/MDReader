@@ -9,10 +9,13 @@
 //! | 便携版 | exe 同级有 `portable.marker` | `<exe 所在目录>\data\` |
 //!
 //! 两种模式**共用同一份 exe**（不做两套构建），根目录之下的结构完全相同：
-//! * `settings.json` —— 主题、字号、缩放、导出偏好、代码折行、frontmatter 显示、
-//!   大纲钉住态、左栏宽度/折叠、窗口几何；字段契约见 [`Settings`]；
+//! * `settings.json` —— 主题、字号、缩放、正文列宽、导出偏好、代码折行、
+//!   frontmatter 显示、大纲钉住态、左栏宽度/折叠、窗口几何；字段契约见 [`Settings`]；
 //! * `lark-token.json` —— 飞书 app_id / app_secret / token 缓存，
-//!   **必须 Windows DPAPI 加密后落盘**，不得明文；
+//!   **必须 Windows DPAPI 加密后落盘**，不得明文（格式见 [`LarkCredentialEnvelope`]）。
+//!   便携版有一条必须如实告知用户的后果：**DPAPI 密文绑定当前 Windows 用户**，
+//!   所以便携目录拷到别的电脑（或换个账号登录）之后，飞书凭据一定解不开、
+//!   需要重新填一次 —— 其余配置照常跟着走。这不是 bug，是「凭据不该能被拷走」；
 //! * `logs\` —— 见 [`crate::logging::log_dir`]（便携版日志同样落在便携目录里，
 //!   否则「解压即用、拷走即净」就不成立）。
 //!
@@ -219,6 +222,28 @@ pub enum HtmlExportMode {
     WithAssets,
 }
 
+/// 正文列宽三态（阅读区外层容器的 `data-reading-width`，样式在
+/// `src/styles/markdown.css`「三、列宽三态」一节）。
+///
+/// 默认是 [`ReadingWidth::Fluid`]（正文宽度跟随窗口）而不是固定列宽：那是 MPE 的行为，
+/// 也是用户点名要的默认——把窗口拉宽之后正文却仍旧钉在 748px，看起来像应用没响应。
+/// 另外两档是**可选**的固定列宽：`medium` 沿用旧版的 748px（= tokens.css 的
+/// `--md-reading-w`），`wide` 是 1000px，给宽屏上想要长行但又不要满屏的人。
+///
+/// 本枚举没有「像素值」这一层：三个档位的实际宽度全部由 CSS 决定，Rust 侧只存档位名。
+/// 把 748/1000 写进后端等于让「改一个数字」变成前后端同改，得不偿失。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReadingWidth {
+    /// 跟随窗口宽度（默认，MPE 行为）
+    #[default]
+    Fluid,
+    /// 适中：748px（旧版列宽）
+    Medium,
+    /// 宽：1000px
+    Wide,
+}
+
 /// frontmatter 属性区的显示方式（FR-14 三态）。
 ///
 /// 取代旧的 `show_metadata: bool`——布尔只能表达「显示/隐藏」，而 FR-14 要的是
@@ -297,10 +322,20 @@ where
         .map(|value| value as i32))
 }
 
+/// 左栏视图（F20 文件夹模式）：最近列表 / 文件夹树，互斥切换（DG 5.3.1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SidebarView {
+    Recent,
+    Tree,
+}
+
 /// `settings.json` 结构 —— **前后端唯一契约**（2026-08-18 批次 1.3）。
 ///
-/// 序列化后的 10 个 key 必须与 TS `types/Settings`、`stores/settings.ts` 逐字相同，
-/// wire 格式一律 camelCase（`font_size` → `fontSize`）。少一个字段的后果不是报错，
+/// 序列化后的**全部 key**（清单 = 下方单测的 `CONTRACT_KEYS`，那是唯一真相，
+/// 这里刻意不写具体数字——写过一次「11 个」，加字段后成了过期谎言）必须与
+/// TS `types/Settings`、`stores/settings.ts` 逐字相同，wire 格式一律 camelCase
+/// （`font_size` → `fontSize`）。少一个字段的后果不是报错，
 /// 而是**静默丢失**：前端不发的字段被 `#[serde(default)]` 填成默认值再原样写回盘，
 /// 等于把用户的设置反向覆写。这条契约由下方 `serialized_keys_match_contract` 单测
 /// 机器把关（多一个 / 少一个 / 改名都会红）。
@@ -312,6 +347,8 @@ pub struct Settings {
     pub font_size: u16,
     /// 缩放百分比，范围 90–150（DG 5.2 状态栏）
     pub zoom_percent: u16,
+    /// 正文列宽三态（默认 fluid = 跟随窗口宽度）
+    pub reading_width: ReadingWidth,
     /// 代码块折行（关=横向滚动，DG 5.4）
     pub code_wrap: bool,
     /// frontmatter 显示方式（FR-14 三态）
@@ -323,6 +360,14 @@ pub struct Settings {
     /// 左栏是否折叠（Ctrl+B）
     pub sidebar_collapsed: bool,
     pub html_export_mode: HtmlExportMode,
+    /// 左栏当前视图（F20：recent=最近列表 / tree=文件夹树）
+    pub sidebar_view: SidebarView,
+    /// 已挂载的文件夹根（F20）；None = 未挂载。空串/纯空白按 None 处理（sanitize）
+    pub folder_root: Option<String>,
+    /// 树的展开目录集（绝对路径；上限 [`FOLDER_EXPANDED_LIMIT`]，防手改膨胀）
+    pub folder_expanded: Vec<String>,
+    /// 最近文件夹（新→旧；上限 [`RECENT_FOLDERS_LIMIT`]，与最近文件分开记，DG 5.3.1）
+    pub recent_folders: Vec<String>,
     pub window: WindowGeometry,
 }
 
@@ -332,12 +377,17 @@ impl Default for Settings {
             theme: ThemeMode::System,
             font_size: FONT_SIZE_DEFAULT,
             zoom_percent: ZOOM_DEFAULT,
+            reading_width: ReadingWidth::Fluid,
             code_wrap: false,
             frontmatter_display: FrontmatterDisplay::Card,
             outline_pinned: false,
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             sidebar_collapsed: false,
             html_export_mode: HtmlExportMode::SingleFile,
+            sidebar_view: SidebarView::Recent,
+            folder_root: None,
+            folder_expanded: Vec::new(),
+            recent_folders: Vec::new(),
             window: WindowGeometry::default(),
         }
     }
@@ -368,6 +418,10 @@ const SIDEBAR_WIDTH_MIN: u32 = 264;
 const SIDEBAR_WIDTH_MAX: u32 = 420;
 /// 左栏宽度默认值（前端 `SIDEBAR_WIDTH_DEFAULT`）
 const SIDEBAR_WIDTH_DEFAULT: u32 = 280;
+/// 最近文件夹上限（前端 `RECENT_FOLDERS_LIMIT`，DG 5.3.1；参照 Losansky 先例取 12）
+const RECENT_FOLDERS_LIMIT: usize = 12;
+/// 展开目录集上限：纯脏数据防御（正常使用到不了三位数，手改/损坏才会）
+const FOLDER_EXPANDED_LIMIT: usize = 512;
 /// 窗口最小尺寸，与 `tauri.conf.json > app.windows[0].minWidth/minHeight` 一致
 const WINDOW_MIN_WIDTH: u32 = 800;
 const WINDOW_MIN_HEIGHT: u32 = 600;
@@ -406,19 +460,63 @@ impl Settings {
         }
         self.window.width = self.window.width.clamp(WINDOW_MIN_WIDTH, WINDOW_MAX_EDGE);
         self.window.height = self.window.height.clamp(WINDOW_MIN_HEIGHT, WINDOW_MAX_EDGE);
+
+        // F20 不变式：空串根 = 未挂载；未挂载时展开集无意义、树视图不可进——
+        // 三个字段在这里收敛成一致状态，前端便可以无脑信任读到的组合。
+        if self
+            .folder_root
+            .as_deref()
+            .is_some_and(|root| root.trim().is_empty())
+        {
+            self.folder_root = None;
+        }
+        if self.folder_root.is_none() {
+            self.folder_expanded.clear();
+            self.sidebar_view = SidebarView::Recent;
+        }
+        // 展开集是「追加在尾」的（folderTree.setExpanded），淘汰必须**弃头保尾**：
+        // truncate 会把最新展开的那一条丢掉，攒满上限后目录就永远点不开（复审确认项）。
+        if self.folder_expanded.len() > FOLDER_EXPANDED_LIMIT {
+            let excess = self.folder_expanded.len() - FOLDER_EXPANDED_LIMIT;
+            self.folder_expanded.drain(..excess);
+        }
+        // 最近文件夹是「新的插头」的，truncate（保头弃尾）正是想要的方向
+        self.recent_folders.truncate(RECENT_FOLDERS_LIMIT);
     }
 }
 
 /// 飞书进阶通道凭据（DG 8「飞书分享（双通道）」）。
 /// **明文只在内存中存在**，落盘前必须经 [`dpapi_protect`]。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+///
+/// `#[serde(default)]` 的用途：设置页只会传 `{ appId, appSecret }` 两个字段——
+/// token 缓存是后端自己维护的，前端既拿不到也不该拿。缺字段直接走默认值，
+/// 而不是让整个 `save_lark_credential` 因为「少了 tenantAccessToken」而报错。
+///
+/// **这个结构体永远不会被整体回传给前端**（回传的是 [`LarkCredentialStatus`]）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct LarkCredential {
     pub app_id: String,
     pub app_secret: String,
     /// tenant_access_token 缓存及其过期时间戳（秒）
     pub tenant_access_token: Option<String>,
     pub expires_at: Option<i64>,
+}
+
+/// 凭据的**对外可见状态**：设置页据此渲染「已配置 / 未配置」。
+///
+/// 里面刻意**不含** `app_secret` 与 token —— 密文一旦解出来送进 WebView，
+/// 就等于把它暴露给整条前端链路（DevTools、错误上报、任何一处 `console.log`），
+/// 再也收不回来。前端需要的信息只有三条：配没配、配的是哪个应用、要不要重测连接。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LarkCredentialStatus {
+    /// 是否已存在**可解密**的凭据（文件在但解不开 = 未配置，见 [`load_lark_credential_sync`]）
+    pub configured: bool,
+    /// 掩码后的 app_id（形如 `cli_***`），仅供用户确认「填的是哪个应用」
+    pub app_id_masked: Option<String>,
+    /// 是否已有未过期的 token 缓存（用户据此判断还要不要重跑「测试连接」）
+    pub has_cached_token: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -614,15 +712,294 @@ pub async fn app_info() -> AppResult<AppInfo> {
     })
 }
 
-/// 保存飞书凭据（进 DPAPI 密文）。
+// ---------------------------------------------------------------------------
+// 飞书凭据（DPAPI 密文落盘，M3 / DG 8「飞书分享（双通道）」）
+// ---------------------------------------------------------------------------
+
+/// `lark-token.json` 的信封版本。
 ///
-/// TODO(M3)：调用 [`dpapi_protect`] 后写 `lark-token.json`。
+/// 存版本号是为了让「换加密方案 / 换 entropy」有一条不需要用户自己删文件的退路：
+/// 读到不认识的版本就当没配过（走重新配置流程），而不是抛一个用户看不懂的解析错误。
+const LARK_ENVELOPE_VERSION: u8 = 1;
+
+/// 解不开的凭据文件的归档名（与 [`CORRUPT_BACKUP_NAME`] 同一套思路：不删用户数据，
+/// 但必须让它从原位置消失，否则每次启动都要重走一遍「解密失败」）。
+const LARK_UNREADABLE_BACKUP_NAME: &str = "lark-token.unreadable.json";
+
+/// DPAPI 的可选 entropy（第二因子）。
+///
+/// 作用：DPAPI 的默认作用域是「当前 Windows 用户」——同一账号下**任何**进程都能解开
+/// 我们的密文。补一段应用私有的 entropy 后，别的程序还得先知道这串常量才行。
+/// 这不是强安全边界（常量就在二进制里），但把「随手一读」抬高到「得先逆向」是值得的。
+///
+/// **改动它 = 让所有已保存的凭据立刻失效**（解密会失败 → 走重新配置流程）。
+/// 真要改，请同时把 [`LARK_ENVELOPE_VERSION`] 加一，好在日志里分得清是哪种失败。
+const DPAPI_ENTROPY: &[u8] = b"MDNaonao/lark-credential/v1";
+
+/// `lark-token.json` 的磁盘结构。
+///
+/// 为什么套一层 JSON 而不是直接写裸的 DPAPI 二进制：文件名是 `.json`（DG 7.3 定的），
+/// 写二进制进去会让任何一个想 `type lark-token.json` 排查问题的人先懵一下；
+/// 而 JSON 信封既保住了后缀的诚实，又能带上版本号。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LarkCredentialEnvelope {
+    version: u8,
+    /// DPAPI 密文的十六进制串。
+    ///
+    /// 用 hex 而不是 base64：密文只有几百字节，hex 多出来的一倍体积无关紧要，
+    /// 换来的是编解码逻辑短到一眼能看完（base64 的填充分支是本项目已经踩过的地方）。
+    /// 附带好处：DPAPI blob 固定以 `01000000d08c9ddf...` 开头，肉眼即可确认
+    /// 「这确实是一份 DPAPI 密文」而不是别的什么东西。
+    dpapi: String,
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        // write! 到 String 不会失败，但 fmt::Write 要求处理 Result；用查表避免整段 unwrap
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        out.push(DIGITS[usize::from(byte >> 4)] as char);
+        out.push(DIGITS[usize::from(byte & 0x0f)] as char);
+    }
+    out
+}
+
+fn from_hex(text: &str) -> Result<Vec<u8>, String> {
+    let bytes = text.as_bytes();
+    if bytes.len() % 2 != 0 {
+        return Err(format!("十六进制串长度为奇数：{}", bytes.len()));
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let hi = hex_value(pair[0])?;
+        let lo = hex_value(pair[1])?;
+        out.push((hi << 4) | lo);
+    }
+    Ok(out)
+}
+
+fn hex_value(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(format!("非十六进制字符：0x{byte:02x}")),
+    }
+}
+
+/// 把敏感串打码后再进日志 / 进前端。
+///
+/// 只留前 4 个**字符**（不是字节——app_id 是 ASCII，但这函数将来也可能喂进别的东西，
+/// 按字节切会在多字节字符中间切断，产出一个非法 UTF-8 的分片）。
+fn mask_secret(value: &str) -> String {
+    if value.chars().count() <= 4 {
+        // 太短的值连前缀都算泄露（比如空串会打出 `***`，正好也表达了「里面没东西」）
+        return "***".to_string();
+    }
+    let head: String = value.chars().take(4).collect();
+    format!("{head}***")
+}
+
+/// 把内存里的明文缓冲区抹零。
+///
+/// `Vec` 的 `Drop` 只归还内存、不清内容，序列化出来的明文 secret 会在堆上留一份残影，
+/// 直到那块内存被别的东西覆盖为止（进程崩溃转储、休眠文件都可能把它带出去）。
+/// 用 `write_volatile` 逐字节写：普通赋值会被优化器判定为「写了之后没人读」而整段删掉。
+fn zeroize(buffer: &mut [u8]) {
+    for slot in buffer.iter_mut() {
+        // SAFETY：指针来自当前可变借用的切片元素，必然对齐且可写，写入的是 POD 类型。
+        unsafe { std::ptr::write_volatile(slot, 0) };
+    }
+}
+
+/// 写入飞书凭据（明文 → DPAPI → hex → 原子写）。
+///
+/// **每次保存都会丢弃已有的 token 缓存**：调用点只有「用户改了 app_id/app_secret」
+/// 这一种，而换了应用之后旧的 tenant_access_token 必然作废——留着它只会让下一次
+/// 导入拿一个必定 401 的 token 去撞一次墙。缓存由 [`store_lark_token`] 单独维护。
+pub fn save_lark_credential_sync(credential: &LarkCredential) -> AppResult<()> {
+    if credential.app_id.trim().is_empty() || credential.app_secret.trim().is_empty() {
+        return Err(AppError::config(
+            "飞书 app_id / app_secret 不能为空（请在开放平台的凭证与基础信息页复制）".to_string(),
+        ));
+    }
+
+    let stored = LarkCredential {
+        app_id: credential.app_id.trim().to_string(),
+        app_secret: credential.app_secret.trim().to_string(),
+        tenant_access_token: None,
+        expires_at: None,
+    };
+    write_lark_credential(&stored)?;
+    tracing::info!(
+        app_id = %mask_secret(&stored.app_id),
+        "飞书凭据已保存（DPAPI 密文），token 缓存已重置"
+    );
+    Ok(())
+}
+
+/// 真正落盘的那一层，不做校验也不写日志（[`store_lark_token`] 刷新缓存时复用）。
+fn write_lark_credential(credential: &LarkCredential) -> AppResult<()> {
+    let mut plain = serde_json::to_vec(credential)?;
+    let cipher = dpapi_protect(&plain);
+    // 无论加密成功与否，明文缓冲区都要立刻抹掉
+    zeroize(&mut plain);
+    let cipher = cipher?;
+
+    let envelope = LarkCredentialEnvelope {
+        version: LARK_ENVELOPE_VERSION,
+        dpapi: to_hex(&cipher),
+    };
+    let json = serde_json::to_vec_pretty(&envelope)?;
+    let path = lark_credential_path()?;
+    write_atomic(&path, &json).map_err(|err| explain_save_failure(&path, err))
+}
+
+/// 读取飞书凭据。**永不把失败抛给用户**——读不出来一律等价于「没配过」。
+///
+/// 三种「等于没配过」的情况：
+/// * 文件不存在（首次使用）；
+/// * 信封版本不认识（降级回旧版本运行）；
+/// * DPAPI 解密失败 —— 换机、换 Windows 用户、把便携目录拷到别的电脑上，
+///   都会必然走到这里。DPAPI 密文绑定当前用户，这是设计使然而不是 bug。
+///
+/// 后两种情况会把坏文件归档成 [`LARK_UNREADABLE_BACKUP_NAME`]，
+/// 免得每次启动都重走一遍失败路径（也给用户留一份「原来这里有东西」的痕迹）。
+pub fn load_lark_credential_sync() -> AppResult<Option<LarkCredential>> {
+    let path = lark_credential_path()?;
+    let raw = match fs::read(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            tracing::warn!(path = %path.display(), %err, "飞书凭据读取失败，按未配置处理");
+            return Ok(None);
+        }
+    };
+
+    let body = raw.strip_prefix(&UTF8_BOM[..]).unwrap_or(&raw);
+    let envelope: LarkCredentialEnvelope = match serde_json::from_slice(body) {
+        Ok(envelope) => envelope,
+        Err(err) => {
+            tracing::warn!(%err, "飞书凭据信封解析失败，归档后按未配置处理");
+            archive_unreadable_credential(&path);
+            return Ok(None);
+        }
+    };
+    if envelope.version != LARK_ENVELOPE_VERSION {
+        tracing::warn!(
+            version = envelope.version,
+            expected = LARK_ENVELOPE_VERSION,
+            "飞书凭据信封版本不匹配，归档后按未配置处理"
+        );
+        archive_unreadable_credential(&path);
+        return Ok(None);
+    }
+
+    let cipher = match from_hex(&envelope.dpapi) {
+        Ok(cipher) => cipher,
+        Err(err) => {
+            tracing::warn!(%err, "飞书凭据密文不是合法十六进制，归档后按未配置处理");
+            archive_unreadable_credential(&path);
+            return Ok(None);
+        }
+    };
+
+    let mut plain = match dpapi_unprotect(&cipher) {
+        Ok(plain) => plain,
+        Err(err) => {
+            // 这里刻意只记 kind 而不记 err 全文：DPAPI 的错误串里不含密钥，
+            // 但保持「凭据相关日志一律最小化」的习惯，免得将来有人往里加内容。
+            tracing::warn!(
+                kind = err.kind(),
+                "飞书凭据解密失败（换机 / 换 Windows 用户 / 便携目录被拷走），需重新配置"
+            );
+            archive_unreadable_credential(&path);
+            return Ok(None);
+        }
+    };
+
+    let parsed = serde_json::from_slice::<LarkCredential>(&plain);
+    zeroize(&mut plain);
+    match parsed {
+        Ok(credential) => Ok(Some(credential)),
+        Err(err) => {
+            tracing::warn!(%err, "飞书凭据明文结构异常，归档后按未配置处理");
+            archive_unreadable_credential(&path);
+            Ok(None)
+        }
+    }
+}
+
+/// 刷新 token 缓存（[`crate::share::lark`] 换到新 tenant_access_token 后调用）。
+///
+/// 凭据不存在时**静默返回**：这只可能发生在「用户正好在导入过程中清空了凭据」，
+/// 为此报错除了让一次已经成功的导入显示成失败之外没有任何好处。
+pub fn store_lark_token(token: &str, expires_at: i64) -> AppResult<()> {
+    let Some(mut credential) = load_lark_credential_sync()? else {
+        tracing::debug!("无飞书凭据，跳过 token 缓存写入");
+        return Ok(());
+    };
+    credential.tenant_access_token = Some(token.to_string());
+    credential.expires_at = Some(expires_at);
+    write_lark_credential(&credential)?;
+    // 只记过期时间，绝不记 token 本身（任务硬性要求）
+    tracing::debug!(expires_at, "飞书 token 缓存已更新");
+    Ok(())
+}
+
+/// 把解不开的凭据文件挪走。失败只记日志——挪不动顶多是下次再走一遍同样的分支。
+fn archive_unreadable_credential(path: &Path) {
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    let backup = dir.join(LARK_UNREADABLE_BACKUP_NAME);
+    match fs::rename(path, &backup) {
+        Ok(()) => tracing::warn!(backup = %backup.display(), "已归档无法读取的飞书凭据"),
+        Err(err) => tracing::warn!(%err, path = %path.display(), "归档飞书凭据失败"),
+    }
+}
+
+/// 保存飞书凭据（DPAPI 加密后落盘）。
+///
+/// 前端只需传 `{ appId, appSecret }`；返回值刻意是 `()` 而不是状态对象——
+/// 想拿状态请单独调 [`lark_credential_status`]，保证「写」与「读」两条路径的
+/// 出参形状不会互相牵扯。
 #[tauri::command]
 pub async fn save_lark_credential(credential: LarkCredential) -> AppResult<()> {
-    Err(AppError::not_implemented(format!(
-        "settings::save_lark_credential（M3）：app_id={}",
-        credential.app_id
-    )))
+    save_lark_credential_sync(&credential)
+}
+
+/// 读取凭据的可见状态（**不含 secret 与 token**，见 [`LarkCredentialStatus`]）。
+#[tauri::command]
+pub async fn lark_credential_status() -> AppResult<LarkCredentialStatus> {
+    let credential = load_lark_credential_sync()?;
+    Ok(match credential {
+        Some(credential) => LarkCredentialStatus {
+            configured: true,
+            app_id_masked: Some(mask_secret(&credential.app_id)),
+            has_cached_token: credential.tenant_access_token.is_some(),
+        },
+        None => LarkCredentialStatus {
+            configured: false,
+            app_id_masked: None,
+            has_cached_token: false,
+        },
+    })
+}
+
+/// 清空飞书凭据（设置页「解除绑定」）。文件不存在时按成功处理（幂等）。
+#[tauri::command]
+pub async fn clear_lark_credential() -> AppResult<()> {
+    let path = lark_credential_path()?;
+    match fs::remove_file(&path) {
+        Ok(()) => {
+            tracing::info!("飞书凭据已清除");
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -688,21 +1065,179 @@ pub fn allow_asset_dir<R: tauri::Runtime, M: Manager<R>>(manager: &M, dir: &Path
 // DPAPI 加密位
 // ---------------------------------------------------------------------------
 
-/// DPAPI 加密（CryptProtectData，CRYPTPROTECT_UI_FORBIDDEN，作用域为当前用户）。
+/// `CRYPTPROTECT_UI_FORBIDDEN`：禁止 DPAPI 弹任何 UI。
 ///
-/// TODO(M3)：用已锁定版本的 `windows` crate 调用
-/// `Windows::Win32::Security::Cryptography::CryptProtectData`；
-/// 依赖版本必须跟随 wry 锁定（红线 10），不得为此单独引入新版本。
-pub fn dpapi_protect(plain: &[u8]) -> AppResult<Vec<u8>> {
-    let _ = plain;
-    Err(AppError::not_implemented("settings::dpapi_protect（M3）"))
+/// 必须给：我们可能在**无 UI 路径**（`--action` 右键动词、隐藏渲染窗口）里读凭据，
+/// 那种场景下弹一个没有父窗口的系统对话框 = 进程挂死在一个用户永远看不见的框上。
+#[cfg(windows)]
+const CRYPTPROTECT_UI_FORBIDDEN: u32 = 0x1;
+
+/// DPAPI 的最小 FFI 面（`crypt32.dll` 两个函数 + `kernel32` 的 `LocalFree`）。
+///
+/// # 为什么手写 extern 而不是开 `windows` crate 的 feature
+///
+/// `windows` crate 已在依赖里（`=0.61.3`，跟随 wry 锁定），它的
+/// `Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData}` 确实存在
+/// （本机 registry 源码已核对）——但要用就得往 `Cargo.toml` 的 features 里加
+/// `Win32_Security_Cryptography`，而 `Cargo.toml` 不在本次任务的改动范围内。
+///
+/// 这三个函数的签名三十年没变过、没有指针别名的花样、总共二十行，手写 extern 的
+/// 代价远低于跨文件接线。若主控愿意开那个 feature，把本模块整段换成 crate 绑定即可，
+/// 上层的 [`dpapi_protect`] / [`dpapi_unprotect`] 签名不受影响。
+#[cfg(windows)]
+#[allow(non_snake_case)]
+mod dpapi_ffi {
+    /// `DATA_BLOB`（SDK 里叫 `CRYPTOAPI_BLOB`）：DPAPI 所有进出参数的容器。
+    ///
+    /// 字段顺序与 `#[repr(C)]` 都是硬约束——写反了不会编译报错，
+    /// 只会在运行时把长度当指针用。
+    #[repr(C)]
+    pub struct DataBlob {
+        pub cb_data: u32,
+        pub pb_data: *mut u8,
+    }
+
+    #[link(name = "crypt32")]
+    extern "system" {
+        pub fn CryptProtectData(
+            p_data_in: *const DataBlob,
+            sz_data_descr: *const u16,
+            p_optional_entropy: *const DataBlob,
+            pv_reserved: *mut core::ffi::c_void,
+            p_prompt_struct: *mut core::ffi::c_void,
+            dw_flags: u32,
+            p_data_out: *mut DataBlob,
+        ) -> i32;
+
+        pub fn CryptUnprotectData(
+            p_data_in: *const DataBlob,
+            pp_sz_data_descr: *mut *mut u16,
+            p_optional_entropy: *const DataBlob,
+            pv_reserved: *mut core::ffi::c_void,
+            p_prompt_struct: *mut core::ffi::c_void,
+            dw_flags: u32,
+            p_data_out: *mut DataBlob,
+        ) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        /// DPAPI 的出参缓冲区由 LocalAlloc 分配，只能用 LocalFree 归还
+        /// （用 `free`/`Vec::from_raw_parts` 会直接堆损坏）。
+        pub fn LocalFree(h_mem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    }
 }
 
-/// DPAPI 解密（CryptUnprotectData）。换机/换用户后必然解密失败——
-/// 此时应清空凭据并引导用户重新配置，而不是把错误直接抛给用户。
+/// DPAPI 加密（`CryptProtectData`，作用域 = 当前 Windows 用户 + [`DPAPI_ENTROPY`]）。
+#[cfg(windows)]
+pub fn dpapi_protect(plain: &[u8]) -> AppResult<Vec<u8>> {
+    dpapi_transform(plain, true)
+}
+
+/// DPAPI 解密（`CryptUnprotectData`）。
+///
+/// 换机 / 换 Windows 用户 / 便携目录被拷到别的电脑上 —— 这三种情况下解密**必然失败**，
+/// 那是 DPAPI「密钥绑定用户」的设计使然。调用方（[`load_lark_credential_sync`]）
+/// 据此把凭据当作未配置并引导重配，不要把这个错误直接扔到用户脸上。
+#[cfg(windows)]
+pub fn dpapi_unprotect(cipher: &[u8]) -> AppResult<Vec<u8>> {
+    dpapi_transform(cipher, false)
+}
+
+/// 加解密共用的一段 FFI 编排（两条路径除了调哪个函数以外完全相同）。
+#[cfg(windows)]
+fn dpapi_transform(input: &[u8], protect: bool) -> AppResult<Vec<u8>> {
+    use dpapi_ffi::{CryptProtectData, CryptUnprotectData, DataBlob, LocalFree};
+
+    let verb = if protect { "加密" } else { "解密" };
+    if input.is_empty() {
+        // DPAPI 对 cbData=0 的行为没有文档保证，短路掉而不是赌它的实现细节
+        return Err(AppError::config(format!("DPAPI {verb}输入为空")));
+    }
+    let len = u32::try_from(input.len())
+        .map_err(|_| AppError::config(format!("DPAPI {verb}输入过大：{} 字节", input.len())))?;
+
+    let in_blob = DataBlob {
+        cb_data: len,
+        // pb_data 在 C 结构里是 *mut，但 pDataIn 是 [in] 参数，DPAPI 不会写它
+        pb_data: input.as_ptr().cast_mut(),
+    };
+    // entropy 同样要一个可写指针，拷一份到堆缓冲区里借出去。
+    // 这份拷贝**不需要**抹零：它的内容是编译期常量，本来就明明白白躺在二进制里。
+    let mut entropy_buffer = DPAPI_ENTROPY.to_vec();
+    let entropy = DataBlob {
+        cb_data: entropy_buffer.len() as u32,
+        pb_data: entropy_buffer.as_mut_ptr(),
+    };
+    let mut out = DataBlob {
+        cb_data: 0,
+        pb_data: std::ptr::null_mut(),
+    };
+
+    // SAFETY：
+    // * 三个入参 blob 指向的缓冲区在整个调用期间都被本函数的局部变量持有，不会被移动或释放；
+    // * `pv_reserved` / `p_prompt_struct` 按文档必须为 NULL（配合 UI_FORBIDDEN）；
+    // * `out` 是未初始化的出参，成功时由 DPAPI 用 LocalAlloc 填上，失败时保持 null；
+    // * 返回值是 BOOL，0 = 失败，此时必须用 GetLastError（= `last_os_error`）取原因。
+    let ok = unsafe {
+        if protect {
+            CryptProtectData(
+                &in_blob,
+                std::ptr::null(),
+                &entropy,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out,
+            )
+        } else {
+            CryptUnprotectData(
+                &in_blob,
+                std::ptr::null_mut(),
+                &entropy,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out,
+            )
+        }
+    };
+
+    if ok == 0 {
+        // 必须紧挨着调用取错误码：中间插任何一句都可能把 LastError 冲掉
+        let err = std::io::Error::last_os_error();
+        return Err(AppError::native(format!("DPAPI {verb}失败：{err}")));
+    }
+    if out.pb_data.is_null() {
+        return Err(AppError::native(format!("DPAPI {verb}返回了空缓冲区")));
+    }
+
+    let size = out.cb_data as usize;
+    // SAFETY：DPAPI 保证成功时 pb_data 指向 cb_data 字节的有效内存。
+    let result = unsafe { std::slice::from_raw_parts(out.pb_data, size) }.to_vec();
+    // 解密出来的明文在 DPAPI 的缓冲区里也留着一份，还给系统之前先抹掉
+    // SAFETY：同上，这块内存此刻仍归我们支配，尚未 LocalFree。
+    unsafe { std::ptr::write_bytes(out.pb_data, 0, size) };
+    // SAFETY：out.pb_data 来自 DPAPI 的 LocalAlloc，配对的释放函数只有 LocalFree。
+    unsafe { LocalFree(out.pb_data.cast()) };
+    // entropy_buffer 必须活到这里：DPAPI 在调用期间会读它，提前 drop 就是悬垂指针
+    drop(entropy_buffer);
+
+    Ok(result)
+}
+
+/// 非 Windows 平台没有 DPAPI。本产品只发 Windows，这两个分支仅为可编译性存在——
+/// 真要跨平台，凭据存储必须整体换方案（keyring / 用户口令派生密钥），而不是明文落盘。
+#[cfg(not(windows))]
+pub fn dpapi_protect(plain: &[u8]) -> AppResult<Vec<u8>> {
+    let _ = plain;
+    Err(AppError::not_implemented("DPAPI 仅 Windows 可用"))
+}
+
+#[cfg(not(windows))]
 pub fn dpapi_unprotect(cipher: &[u8]) -> AppResult<Vec<u8>> {
     let _ = cipher;
-    Err(AppError::not_implemented("settings::dpapi_unprotect（M3）"))
+    Err(AppError::not_implemented("DPAPI 仅 Windows 可用"))
 }
 
 #[cfg(test)]
@@ -714,16 +1249,21 @@ mod tests {
     /// 契约 A（2026-08-18 批次 1.3）：`settings.json` / IPC 载荷的 **全部** 顶层 key。
     /// 与 TS `types/index.ts` 的 `SETTINGS_KEY_MAP`、`stores/settings.ts` 的
     /// `DEFAULT_SETTINGS` 一一对应。改这里等于改前后端契约，必须三处同改。
-    const CONTRACT_KEYS: [&str; 10] = [
+    const CONTRACT_KEYS: [&str; 15] = [
         "theme",
         "fontSize",
         "zoomPercent",
+        "readingWidth",
         "codeWrap",
         "frontmatterDisplay",
         "outlinePinned",
         "sidebarWidth",
         "sidebarCollapsed",
         "htmlExportMode",
+        "sidebarView",
+        "folderRoot",
+        "folderExpanded",
+        "recentFolders",
         "window",
     ];
 
@@ -739,6 +1279,8 @@ mod tests {
         assert_eq!(settings.sidebar_width, 280);
         assert_eq!(settings.theme, ThemeMode::System);
         assert_eq!(settings.frontmatter_display, FrontmatterDisplay::Card);
+        // 默认跟随窗口宽度（MPE 行为）：固定列宽是可选项，不是出厂状态
+        assert_eq!(settings.reading_width, ReadingWidth::Fluid);
         assert_eq!(settings.window.x, None);
         assert_eq!(settings.window.y, None);
     }
@@ -775,7 +1317,23 @@ mod tests {
         assert_eq!(json["theme"], "system");
         assert_eq!(json["frontmatterDisplay"], "card");
         assert_eq!(json["htmlExportMode"], "single-file");
+        assert_eq!(json["readingWidth"], "fluid");
+        // F20：出厂 = 最近列表视图、未挂载文件夹
+        assert_eq!(json["sidebarView"], "recent");
+        assert!(json["folderRoot"].is_null(), "未挂载的根必须是 null");
         assert!(json["window"]["x"].is_null(), "无记录的坐标必须是 null");
+
+        // 三档列宽的 wire 值即 CSS 的 data-reading-width 取值，拼错一个档位就整档失效
+        for (value, wire) in [
+            (ReadingWidth::Fluid, "fluid"),
+            (ReadingWidth::Medium, "medium"),
+            (ReadingWidth::Wide, "wide"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(value).expect("序列化不应失败"),
+                serde_json::Value::from(wire)
+            );
+        }
 
         for (value, wire) in [
             (FrontmatterDisplay::Card, "card"),
@@ -806,6 +1364,7 @@ mod tests {
             "theme": "dark",
             "fontSize": 18,
             "zoomPercent": 125,
+            "readingWidth": "wide",
             "codeWrap": true,
             "frontmatterDisplay": "raw",
             "outlinePinned": true,
@@ -820,6 +1379,7 @@ mod tests {
         assert_eq!(settings.theme, ThemeMode::Dark);
         assert_eq!(settings.font_size, 18);
         assert_eq!(settings.zoom_percent, 125);
+        assert_eq!(settings.reading_width, ReadingWidth::Wide);
         assert!(settings.code_wrap);
         assert_eq!(settings.frontmatter_display, FrontmatterDisplay::Raw);
         assert!(settings.outline_pinned);
@@ -854,6 +1414,53 @@ mod tests {
         assert_eq!(settings.sidebar_width, SIDEBAR_WIDTH_MAX);
         assert_eq!(settings.window.width, WINDOW_MIN_WIDTH);
         assert_eq!(settings.window.height, 900, "区间内的高度不应被动");
+    }
+
+    /// F20 不变式（TS 侧 settings.test.ts 有同款 describe，双侧都必须钉住）：
+    /// 空白根 = 未挂载 → 视图退回 recent、展开集清空。
+    #[test]
+    fn sanitize_enforces_folder_mode_invariants() {
+        let mut settings = Settings {
+            sidebar_view: SidebarView::Tree,
+            folder_root: Some("  ".into()),
+            folder_expanded: vec![r"C:\a".into(), r"C:\b".into()],
+            ..Settings::default()
+        };
+        settings.sanitize();
+        assert_eq!(settings.folder_root, None);
+        assert_eq!(settings.sidebar_view, SidebarView::Recent);
+        assert!(settings.folder_expanded.is_empty());
+    }
+
+    /// F20 上限截断方向：展开集追加在尾 → 弃头保尾（保住最新展开的）；
+    /// 最近文件夹新的插头 → 保头弃尾。有根时视图与展开集不许被误清。
+    #[test]
+    fn sanitize_folder_limits_keep_the_right_end() {
+        let mut settings = Settings {
+            sidebar_view: SidebarView::Tree,
+            folder_root: Some(r"C:\notes".into()),
+            folder_expanded: (0..FOLDER_EXPANDED_LIMIT + 10)
+                .map(|index| format!(r"C:\notes\d{index}"))
+                .collect(),
+            recent_folders: (0..RECENT_FOLDERS_LIMIT + 5)
+                .map(|index| format!(r"C:\roots\r{index}"))
+                .collect(),
+            ..Settings::default()
+        };
+        settings.sanitize();
+        assert_eq!(settings.sidebar_view, SidebarView::Tree, "有根不许清视图");
+        assert_eq!(settings.folder_expanded.len(), FOLDER_EXPANDED_LIMIT);
+        // 弃头保尾：最新（尾部）那条必须幸存
+        assert_eq!(
+            settings.folder_expanded.last().map(String::as_str),
+            Some(format!(r"C:\notes\d{}", FOLDER_EXPANDED_LIMIT + 9).as_str())
+        );
+        assert_eq!(settings.recent_folders.len(), RECENT_FOLDERS_LIMIT);
+        // 保头弃尾：最新（头部）那条必须幸存
+        assert_eq!(
+            settings.recent_folders.first().map(String::as_str),
+            Some(r"C:\roots\r0")
+        );
     }
 
     /// 窗口宽高为 0 / 负数 / 非有限值：整份配置不许因此解析失败，几何回落默认。
@@ -909,6 +1516,8 @@ mod tests {
         let settings = parse_settings(raw).expect("缺字段/多字段都应能解析");
         assert_eq!(settings.theme, ThemeMode::Dark);
         assert_eq!(settings.font_size, Settings::default().font_size);
+        // 升级路径：旧 settings.json 里没有 readingWidth，必须落到 fluid 而不是让解析失败
+        assert_eq!(settings.reading_width, ReadingWidth::Fluid);
     }
 
     /// 记事本另存为会加 BOM，不剥掉 serde_json 会直接报错。
@@ -1022,5 +1631,145 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // 飞书凭据（M3）
+    //
+    // 注意：这里刻意**不测** save/load_lark_credential_sync —— 它们写的是真实的
+    // `%APPDATA%\MDNaonao\lark-token.json`，跑一次单测就会把开发者自己配的凭据覆盖掉。
+    // 落盘那一层由 write_atomic 的测试覆盖，此处只钉住纯逻辑与 FFI 往返。
+    // -----------------------------------------------------------------------
+
+    /// 契约 C：`LarkCredentialStatus` 的 wire 字段（设置页逐字依赖），
+    /// 且**绝不能**出现 appSecret / token —— 这条断言就是那道闸门。
+    #[test]
+    fn lark_status_wire_keys_match_contract() {
+        let value = serde_json::to_value(LarkCredentialStatus {
+            configured: true,
+            app_id_masked: Some("cli_***".to_string()),
+            has_cached_token: false,
+        })
+        .expect("序列化不应失败");
+        let object = value.as_object().expect("应序列化为 JSON 对象");
+
+        let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+        let expected: BTreeSet<&str> = ["configured", "appIdMasked", "hasCachedToken"]
+            .into_iter()
+            .collect();
+        assert_eq!(actual, expected, "飞书凭据状态字段契约漂移（TS 侧需同步）");
+
+        let serialized = value.to_string();
+        for leaked in ["appSecret", "app_secret", "tenantAccessToken"] {
+            assert!(
+                !serialized.contains(leaked),
+                "凭据状态里绝不允许出现 {leaked}"
+            );
+        }
+    }
+
+    /// 前端只传 `{ appId, appSecret }`，缺的字段必须走默认值而不是解析失败。
+    #[test]
+    fn lark_credential_accepts_partial_payload_from_frontend() {
+        let credential: LarkCredential =
+            serde_json::from_str(r#"{ "appId": "cli_a1b2c3", "appSecret": "s3cr3t" }"#)
+                .expect("两字段载荷必须能解析");
+        assert_eq!(credential.app_id, "cli_a1b2c3");
+        assert_eq!(credential.tenant_access_token, None);
+        assert_eq!(credential.expires_at, None);
+
+        // wire 名同样是契约（落盘的密文里就是这套 key，换名 = 老凭据解出来全是默认值）
+        let json = serde_json::to_value(&credential).expect("序列化不应失败");
+        let actual: BTreeSet<&str> = json
+            .as_object()
+            .expect("应为对象")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let expected: BTreeSet<&str> = ["appId", "appSecret", "tenantAccessToken", "expiresAt"]
+            .into_iter()
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    /// 打码只留前 4 字符；短值整串打掉，别把「secret 只有 3 位」这种信息也漏出去。
+    #[test]
+    fn masks_secrets_for_logs_and_ui() {
+        assert_eq!(mask_secret("cli_a1b2c3d4"), "cli_***");
+        assert_eq!(mask_secret(""), "***");
+        assert_eq!(mask_secret("abcd"), "***");
+        assert_eq!(mask_secret("abcde"), "abcd***");
+        // 多字节字符不许被从中间切断（切断会产出非法 UTF-8）
+        assert_eq!(mask_secret("中文应用标识"), "中文应用***");
+    }
+
+    /// hex 往返 + 非法输入必须报错（而不是静默产出一份坏密文）。
+    #[test]
+    fn hex_round_trips_and_rejects_garbage() {
+        let bytes = vec![0x00, 0x01, 0x0f, 0x10, 0x7f, 0x80, 0xff];
+        let text = to_hex(&bytes);
+        assert_eq!(text, "00010f107f80ff");
+        assert_eq!(from_hex(&text).expect("往返应成功"), bytes);
+
+        // 大写也要认（用户可能手工改过文件）
+        assert_eq!(from_hex("FF00").expect("大写应可解"), vec![0xff, 0x00]);
+        assert_eq!(from_hex("").expect("空串合法"), Vec::<u8>::new());
+        assert!(from_hex("abc").is_err(), "奇数长度应报错");
+        assert!(from_hex("zz").is_err(), "非十六进制字符应报错");
+    }
+
+    /// 信封是磁盘格式，key 名与版本号都不许随手改（改了 = 所有人的凭据失效）。
+    #[test]
+    fn credential_envelope_disk_format_is_stable() {
+        let json = serde_json::to_string(&LarkCredentialEnvelope {
+            version: LARK_ENVELOPE_VERSION,
+            dpapi: "01000000".to_string(),
+        })
+        .expect("序列化不应失败");
+        assert_eq!(json, r#"{"version":1,"dpapi":"01000000"}"#);
+        assert_eq!(LARK_ENVELOPE_VERSION, 1);
+    }
+
+    /// 抹零必须真的抹掉（防止有人把 write_volatile 改回普通赋值被优化器删掉）。
+    #[test]
+    fn zeroize_clears_buffer() {
+        let mut buffer = b"app-secret".to_vec();
+        zeroize(&mut buffer);
+        assert!(buffer.iter().all(|byte| *byte == 0));
+    }
+
+    /// DPAPI 往返：密文既不能等于明文，也必须能原样解回来。
+    ///
+    /// 这条同时验证了 [`DPAPI_ENTROPY`] 在加解密两侧对称使用——
+    /// 只在一侧传 entropy 是本类代码最典型的 bug，且症状是「保存看着成功、下次读不出来」。
+    #[cfg(windows)]
+    #[test]
+    fn dpapi_round_trips_credential_payload() {
+        let plain = br#"{"appId":"cli_a1b2c3","appSecret":"s3cr3t","tenantAccessToken":null,"expiresAt":null}"#;
+
+        let cipher = dpapi_protect(plain).expect("当前用户会话下 DPAPI 加密应成功");
+        assert_ne!(cipher.as_slice(), &plain[..], "密文不得等于明文");
+        assert!(cipher.len() > plain.len(), "DPAPI 密文必然带头部与校验");
+
+        let round = dpapi_unprotect(&cipher).expect("同一用户解密应成功");
+        assert_eq!(round.as_slice(), &plain[..]);
+    }
+
+    /// 空输入短路，不去赌 DPAPI 对 cbData=0 的未文档化行为。
+    #[cfg(windows)]
+    #[test]
+    fn dpapi_rejects_empty_input() {
+        assert!(dpapi_protect(&[]).is_err());
+        assert!(dpapi_unprotect(&[]).is_err());
+    }
+
+    /// 被篡改 / 别人家的密文必须解密失败，而不是解出一堆垃圾当成凭据用。
+    #[cfg(windows)]
+    #[test]
+    fn dpapi_rejects_tampered_ciphertext() {
+        let mut cipher = dpapi_protect(b"payload").expect("加密应成功");
+        let last = cipher.len() - 1;
+        cipher[last] ^= 0xff;
+        assert!(dpapi_unprotect(&cipher).is_err(), "篡改后的密文必须解不开");
     }
 }

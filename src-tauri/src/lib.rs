@@ -5,7 +5,8 @@
 //! | 模块 | 职责 |
 //! |---|---|
 //! | [`files`] | 文件读取、编码检测、标题提取、recent.json、notify 监听 |
-//! | [`export`] | 打印模板组装、PrintToPdf COM 桥接、CDP 兜底 |
+//! | [`export`] | 打印窗口生命周期、PrintToPdf COM 桥接、CDP 兜底、系统打印对话框 |
+//! | [`export_html`] | HTML 导出（FR-07）：附件路径重写、base64 内联 / 资源目录拷贝 |
 //! | [`capture`] | 长图（CDP captureScreenshot + captureBeyondViewport） |
 //! | [`share`] | 分享通道（微信 / 飞书 / 钉钉），飞书 API 在 [`share::lark`] |
 //! | [`obsidian`] | Vault 枚举、复制导入、URI 唤起 |
@@ -20,8 +21,10 @@
 
 pub mod capture;
 pub mod cmdline;
+pub mod dirtree;
 pub mod error;
 pub mod export;
+pub mod export_html;
 pub mod files;
 pub mod logging;
 pub mod obsidian;

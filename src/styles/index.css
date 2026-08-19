@@ -111,6 +111,15 @@
     box-shadow: 0 0 0 2px var(--md-accent);
   }
 
+  /* 阅读区滚动容器例外：它有 tabIndex=-1 **只是为了让 PgDn/PgUp/Space 有个落点**
+     （按键必须落在获得焦点的滚动容器上才滚得动），它本身不是控件，
+     给它焦点表达没有任何信息量。而套上去的 2px accent 环会沿整条左边缘画出一条
+     从顶栏一直拉到底的蓝竖线——另外三边正好被外壳的 overflow:hidden 裁掉，
+     于是看起来不像焦点环，像界面坏了。 */
+  [data-reading-root]:focus-visible {
+    box-shadow: none;
+  }
+
   /* 输入框例外：聚焦只把描边换成 brand，不加环、不发光（设计铁律 6）。
      需要同样表现的自定义控件加 data-focus="border" 即可复用这条。 */
   input:focus,

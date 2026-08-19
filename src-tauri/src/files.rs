@@ -380,8 +380,8 @@ pub async fn watch_file(app: AppHandle, path: String) -> AppResult<()> {
 
     let (tx, rx) = mpsc::channel::<()>();
     let filter = target.clone();
-    let mut watcher: RecommendedWatcher = notify::recommended_watcher(
-        move |result: notify::Result<notify::Event>| match result {
+    let mut watcher: RecommendedWatcher =
+        notify::recommended_watcher(move |result: notify::Result<notify::Event>| match result {
             Ok(event) => {
                 if !is_content_event(&event.kind) {
                     return;
@@ -392,12 +392,11 @@ pub async fn watch_file(app: AppHandle, path: String) -> AppResult<()> {
                 }
             }
             Err(err) => tracing::warn!(%err, "文件监听回调报错"),
-        },
-    )
-    .map_err(|err| {
-        tracing::error!(%err, "创建文件监听器失败");
-        AppError::native(format!("创建文件监听器失败：{err}"))
-    })?;
+        })
+        .map_err(|err| {
+            tracing::error!(%err, "创建文件监听器失败");
+            AppError::native(format!("创建文件监听器失败：{err}"))
+        })?;
 
     watcher
         .watch(&dir, RecursiveMode::NonRecursive)
@@ -472,6 +471,8 @@ fn watch_state(app: &AppHandle) -> tauri::State<'_, WatchState> {
 }
 
 /// 只关心「内容可能变了」的事件：Access（打开/读取）在某些后端会刷屏，直接滤掉。
+/// dirtree.rs 的目录监听**刻意不用**这套口径——它放行全部 Modify(_)，对结构树
+/// 意味着每次内容保存都触发无效重列；树侧有自己的 is_structural_event。
 fn is_content_event(kind: &EventKind) -> bool {
     matches!(
         kind,
@@ -544,8 +545,10 @@ fn lock_recent() -> MutexGuard<'static, Option<Vec<RecentEntry>>> {
 }
 
 /// 锁中毒时取回内部值继续用：最近列表是可再生数据，为它把整个应用卡死不值当。
-fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+pub(crate) fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 变更缓存 → 排序截断 → 释放锁 → 写盘，返回变更后的全表快照。
@@ -700,7 +703,7 @@ fn missing_paths(paths: Vec<String>) -> Vec<String> {
 
 /// 相对路径按当前工作目录补全；不做 `canonicalize`——它会返回 `\\?\C:\…`
 /// 这种 UNC 前缀，explorer 与前端展示都不认。
-fn to_absolute(path: &Path) -> PathBuf {
+pub(crate) fn to_absolute(path: &Path) -> PathBuf {
     if path.is_absolute() {
         return path.to_path_buf();
     }
@@ -928,7 +931,10 @@ mod tests {
     #[test]
     fn falls_back_to_gbk_for_non_utf8_bytes() {
         let (bytes, _, _) = encoding_rs::GBK.encode("你好，世界");
-        assert!(std::str::from_utf8(&bytes).is_err(), "样本应当不是合法 UTF-8");
+        assert!(
+            std::str::from_utf8(&bytes).is_err(),
+            "样本应当不是合法 UTF-8"
+        );
         let (text, encoding) = detect_and_decode(&bytes).expect("应解码成功");
         assert_eq!(text, "你好，世界");
         assert_eq!(encoding, Encoding::Gbk);
@@ -969,10 +975,7 @@ mod tests {
     /// 闭合式 ATX 要去掉尾部 `#`，但 `C#` 这种正文里的井号不能误伤。
     #[test]
     fn trims_closing_hashes_but_keeps_inline_hash() {
-        assert_eq!(
-            extract_title("# 标题 ###", Path::new("D:\\a.md")),
-            "标题"
-        );
+        assert_eq!(extract_title("# 标题 ###", Path::new("D:\\a.md")), "标题");
         assert_eq!(extract_title("# C#", Path::new("D:\\a.md")), "C#");
     }
 
@@ -1019,10 +1022,7 @@ mod tests {
         ];
         sort_entries(&mut entries);
         let paths: Vec<&str> = entries.iter().map(|item| item.path.as_str()).collect();
-        assert_eq!(
-            paths,
-            vec!["D:\\a.md", "D:\\d.md", "D:\\c.md", "D:\\b.md"]
-        );
+        assert_eq!(paths, vec!["D:\\a.md", "D:\\d.md", "D:\\c.md", "D:\\b.md"]);
     }
 
     /// 同路径去重后置于队首。

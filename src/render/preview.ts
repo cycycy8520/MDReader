@@ -616,6 +616,41 @@ function createPlaceholderButton(label: string): HTMLButtonElement {
 }
 
 /**
+ * 本地图片加载失败时的占位块。
+ *
+ * 【为什么值得单独做一个】默认破图图标只说明"这儿本来有张图"，不说明**哪张**、
+ * 也不说明是文件没了还是应用坏了。对一个只读查看器来说，用户此刻最需要的一条信息
+ * 就是那个路径——有了它，是自己挪了文件、还是链接写错了，一眼就能判断。
+ *
+ * 路径用 `title` 挂全量、正文里截断显示：图片路径经常很长，铺开会把版面撑乱。
+ */
+function replaceWithBrokenPlaceholder(image: HTMLImageElement, filePath: string): void {
+  const alt = image.getAttribute("alt") ?? "";
+
+  const placeholder = document.createElement("span");
+  placeholder.className =
+    "my-1 inline-flex max-w-full items-center gap-2 rounded-row border border-l2 bg-card px-3 py-1.5 align-middle text-ui-sm text-tertiary";
+  placeholder.setAttribute("data-broken-image", filePath);
+  if (alt !== "") {
+    placeholder.setAttribute("data-broken-alt", alt);
+  }
+  // 完整路径挂在 title 上：截断显示的那半截往往正好缺了关键的一段
+  placeholder.title = filePath;
+
+  const label = document.createElement("span");
+  label.className = "shrink-0";
+  label.textContent = t.preview.localImageFailed;
+
+  // 路径比「加载失败」四个字更有用，所以给它更亮的一档而不是更暗
+  const path = document.createElement("span");
+  path.className = "min-w-0 truncate text-ui-sm text-secondary";
+  path.textContent = filePath;
+
+  placeholder.append(label, path);
+  image.replaceWith(placeholder);
+}
+
+/**
  * 把外链图片换成占位块（红线 4：默认不发起任何外部请求，必须用户显式点击），
  * 返回该占位块的「加载」入口供批量加载复用（2.6）。
  *
@@ -635,6 +670,9 @@ function replaceWithExternalPlaceholder(
   placeholder.className =
     "my-1 inline-flex max-w-full items-center gap-2 rounded-row border border-l2 bg-card px-3 py-1.5 align-middle text-ui-sm text-tertiary";
   placeholder.setAttribute("data-external-image", source);
+  // alt 必须随占位块一起留下：HTML 导出会把占位块还原成真 <img>（render/htmlExport.ts
+  // 的 restoreExternalImages），读不到这条就等于把作者写的替代文字丢掉了。
+  placeholder.setAttribute("data-external-alt", alt);
 
   const label = document.createElement("span");
   label.className = "truncate";
@@ -746,6 +784,18 @@ function rewriteImages(
     // 供阅读区做灯箱事件委托（DG 6.4-4）
     image.setAttribute("data-preview-image", "true");
     image.loading = "lazy";
+
+    // 加载失败必须有自己的失败态：不接这个 error，用户看到的就是 WebView 的默认破图
+    // 图标——那个图标既不说明是哪张图、也不说明是文件没了还是软件坏了，
+    // 观感上等同于"渲染挂了"。实测中文件缺失、路径写错、盘符掉线都会走到这里。
+    const failedPath = filePath;
+    image.addEventListener(
+      "error",
+      () => {
+        replaceWithBrokenPlaceholder(image, failedPath);
+      },
+      { once: true, signal },
+    );
   }
 
   if (external.length === 0) {

@@ -166,7 +166,14 @@
    ══════════════════════════════════════════════════════════════ */
 
 [data-reading-width] {
-  width: 100%;
+  /* box-sizing 与 width:auto 都是**防御性**的写法，不是在修某个已知缺陷：
+     Tailwind preflight 已经把 border-box 铺给所有元素，这里显式再写一次是为了
+     让这条规则不依赖「别处某个 reset 仍然存在」；而块级元素默认就是 width:auto、
+     天生填满父级内容盒且 padding 算在内，比 `width:100%` + padding 的组合少一个
+     可能出错的环节（那个组合一旦 box-sizing 被谁改成 content-box 就会溢出父级）。
+     导出件（render/htmlExport.ts 的 .md-export-page）也各自写了一份同样的声明。 */
+  box-sizing: border-box;
+  width: auto;
   margin: 0 auto;
   padding: 32px;
 }
@@ -351,23 +358,28 @@
 }
 .md-content .md-table-wrap > table {
   display: table;
-  /* max-content 让表格按内容自然展开，**但必须被 100% 封顶**：
-     没有这个上限（曾写成 max-width:none）单元格就永远不换行，
-     一句 50 字的说明能把表撑到几千 px —— 阅读性直接归零。
-     有了上限：宽度够就自然展开，不够就在单元格内换行；
-     只有列数多到换行也塞不下时，才由包裹层横向滚动。这正是 GitHub / MPE 的行为。 */
-  width: max-content;
+  /* 表格先适应容器（VS Code / GitHub 预览的真实行为）：窄表收缩到内容宽，
+     宽表封顶在容器宽、靠单元格内换行消化；只有 min-content（不可断 token：
+     行内代码、数字、URL）真的放不下时，表才溢出包裹壳 → 壳内横向滚动。
+     必须显式覆盖基底的 width:max-content——那是配合基底 display:block 滚动
+     容器的写法，搬到 display:table 上会让表格永远不适应窗口、单元格永不换行
+     （曾经的「max-width:none + 单元格 32em 封顶」正是这样把整表推成一行到底：
+     中文数据表每列 20~35 字，全都够不到 32em 阈值，换行一次都不会发生）。 */
+  width: auto;
   max-width: 100%;
   overflow: visible;
   margin-bottom: 0;
 }
 
-/* 单元格：允许长句换行，并给一个上限避免某一列独吞整个表宽 */
+/* 单元格：长句/长 token 在格内换行。
+   用 break-word 而不是 anywhere：anywhere 参与 min-content 计算，会把列宽
+   下限打散到一格一字，多列宽表在窄窗里被压成竖排；break-word 只在排版时
+   紧急断行、不缩小 min-content，不可断 token 撑住列宽下限，
+   真超宽表走壳内滚动而不是压扁——两种坏结局都关掉。 */
 .md-content .md-table-wrap th,
 .md-content .md-table-wrap td {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   word-break: normal;
-  max-width: 32em;
 }
 
 /* 外链图片占位（红线 4：默认不发起网络请求）——业务专属 UI，基底不可能有。

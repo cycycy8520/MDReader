@@ -19,6 +19,7 @@
     "tauri": "tauri",
     "check:no-cdn": "node scripts/check-no-cdn.mjs",
     "gen:corpus": "node scripts/gen-corpus.mjs",
+    "gen:corpus-assets": "node scripts/gen-corpus-assets.mjs",
     "package": "node scripts/package.mjs"
   },
   "dependencies": {
