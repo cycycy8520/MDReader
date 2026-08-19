@@ -38,8 +38,10 @@ tmp/
 .env.*
 !.env.example
 
-# 交付产物（pnpm package 产出，不入库）
-/release/
+# 交付产物（pnpm package 产出）。
+# 2026-08-20 用户决定安装包**随仓库分发**（「把安装包也上传上去」）——
+# 原「不入库」规则就此作废；三件套 + README 全部入库，重打包后记得一并提交。
+# （曾因此静默踩坑：git add -A 跳过忽略目录，两次提交自称带了安装包实际没带。）
 
 # test-corpus 图片资源：二进制不入库，用 pnpm gen:corpus-assets 生成
 # （README 第 4 节列了清单；不生成的话 full-gfm.md 第 10 节四个用例全是破图，
