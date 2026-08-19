@@ -2,164 +2,124 @@
 
 > 打开即看、导出即用、分享即达的 Windows Markdown 阅读器。
 
-Windows 10/11 桌面应用，注册为 `.md` 系列文件的打开程序。**严格只读**——V1 完全不做编辑，把"看"这一件事做到极致；差异化押在 **Obsidian 一键入库** 与 **微信长图 / 飞书分享** 上。
+Windows 10/11 桌面应用，注册为 `.md` 系列文件的默认打开程序。**严格只读**——完全不做编辑，把「看」这一件事做到极致；差异化押在 **Obsidian 一键入库** 与 **微信长图 / 飞书分享** 上。
 
-技术栈：Tauri 2（Rust + WebView2）+ React 18 + TypeScript + Vditor（`Vditor.preview()` 只读渲染，资源本地自托管）。
+技术栈：Tauri 2（Rust + WebView2）+ React 18 + TypeScript + Vditor（`Vditor.preview()` 只读渲染，资源本地自托管、零 CDN）。安装包 **≈5.4MB**。
 
 ---
 
-## 当前状态：M0 技术验证，**应用还跑不起来**
+## 下载安装
 
-| 项目 | 情况 |
+交付物在 [`release/`](release/) 目录（由 `pnpm package` 产出，附 SHA256 校验和）：
+
+| 文件 | 说明 |
 |---|---|
-| 整体进度 | **0%**（详见 [DEV_GUIDE.md 9.2](DEV_GUIDE.md) 进度表，那里是唯一事实源） |
-| 需求与方案 | ✅ 已定稿（DEV_GUIDE.md v0.2，2026-08-17） |
-| 代码 | 🔄 M0-0 建仓与脚手架进行中；M0-①～④ 未开始 |
-| 能否运行 | ❌ **不能**。当前仓库只是脚手架骨架 |
+| `MDNaonao_x.y.z_x64_setup.exe` | **安装包**（NSIS）。双击安装，自动注册 `.md/.markdown/.mdown/.mkd/.mkdn` 关联 |
+| `MDNaonao_x.y.z_x64_portable.zip` | **便携版**（与安装版同一份 exe）。解压即用，数据写在解压目录 `data\` 下，不碰注册表与 %APPDATA% |
+| `SHA256SUMS.txt` | 校验和（`certutil -hashfile <文件> SHA256` 比对） |
 
-**为什么现在跑不起来（如实说明）：**
-
-1. **本机缺 Rust 工具链与 pnpm**，`pnpm tauri dev` / `pnpm tauri build` 无法执行（安装方式见下节）。
-2. **缺应用图标**：`src-tauri/icons/` 尚未产出（DEV_GUIDE 9.2"品牌/Logo/图标"仍为⬜），Tauri 打包会因缺图标失败。
-3. **缺自托管渲染资源**：`vendor/vditor/` 不入库（见 `.gitignore`），需先跑 `node scripts/fetch-vditor.mjs` 按 DEV_GUIDE 8 节白名单裁剪出自托管资源。
-4. 依赖尚未安装（`node_modules/` 不存在），也未做过任何构建验证。
-
-**下一步该做什么**：按 [AI_DEV_GUIDE.md 第 7 节](AI_DEV_GUIDE.md) 的任务卡串行推进 —— **M0-0 → M0-① → M0-② → M0-③ → M0-④**，每张卡在 `docs/m0/` 产出一份验证报告。M0 出口标准见 DEV_GUIDE 9.1。
+系统要求：Windows 10/11 x64；WebView2 Runtime（Win11 自带，Win10 缺失时安装器自动补装）。
 
 ---
 
-## 功能规划
+## 功能（当前版本 0.1.0 实际具备）
 
-按 [DEV_GUIDE.md 2.1](DEV_GUIDE.md) 精简。✅ = 该版本交付，➕ = 在前一版本基础上增强。
+**渲染**
+GFM 全家桶（表格格内换行不截断、任务列表、脚注）、Mermaid、KaTeX（含 `\ce` 化学式）、代码高亮（可选行号 / 折行）、GitHub 五色告警块（`> [!NOTE]` 等）、frontmatter 属性卡片、emoji 短代码、`[TOC]`。UTF-8 / GBK 编码自动识别，>5MB 大文件分段渲染，>50MB 拒开有明确提示。
 
-| 编号 | 能力 | M1（v0.9 内测） | v1.0（公开发布） | v1.1（生态版） |
-|---|---|---|---|---|
-| F1 | MD 渲染查看（GFM / Mermaid / KaTeX / 脚注 / 代码高亮 / frontmatter） | ✅ | | |
-| F2 | 文件关联 + 首启"设为默认"引导 | ✅ | | |
-| F3 | 左侧最近列表（分组 / 置顶 / 移除 / 打开目录 / 复制路径） | ✅ 简版 | ➕ 过滤 | |
-| F4 | 大纲（浮层态 / 钉住态 + 滚动高亮） | ✅ | | |
-| F5 | 文档内查找（Ctrl+F 浮条、命中计数） | ✅ | | |
-| F6 | 外部修改自动刷新（保持滚动位置） | ✅ | | |
-| F7 | 资源管理器右键菜单 | ✅ 打开 / 转 HTML | ➕ 转 PDF | ➕ 导入 Obsidian / 分享 |
-| F8 | 命令行参数 `--action <verb> <file>` | ✅ | | |
-| F9 | 主题（深 / 浅 / 跟随系统，首启默认跟随） | ✅ | | |
-| F10 | 导出 HTML | ✅ 单文件（base64 内联） | ➕ HTML + 资源文件夹 | |
-| F11 | 导出 PDF（A4、中文字体正确、静默导出） | | ✅ | |
-| F12 | 打印（Ctrl+P，复用 PDF 模板） | | ✅ | |
-| F13 | 滚动位置记忆 | | ✅ | |
-| F14 | 导入 Obsidian（发现 Vault、复制附件、URI 定位） | | | ✅ |
-| F15 | 分享微信（长图主路径 + 公众号富文本） | | | ✅ |
-| F16 | 分享飞书（复制富文本默认通道 + API 进阶通道） | | | ✅ |
-| F17 | 分享钉钉（富文本 / 长图 / 发送文件） | | | ✅ |
+**阅读体验**
+深 / 浅 / 跟随系统主题；字号、缩放、正文列宽三档；可钉住的大纲（滚动高亮）；文档内查找（Ctrl+F）；**专注阅读**（F11，隐去全部外壳只留正文）；外部修改自动刷新且不跳位置；滚动位置记忆（重开恢复）；本地图片直显、外链图片默认不发请求（点击加载）。
 
-> F18（Ctrl+K 快速切换）属 V2，不在上表三个版本内。
-> **明确不做**（DEV_GUIDE 2.2）：编辑（含"轻编辑"）、云同步、双链知识库、插件系统、macOS/Linux、遥测、便携版、自动更新。
-> **平台硬约束**（DEV_GUIDE 2.3，产品文案必须与之一致）：微信聊天窗口不支持富文本（聊天场景只能发长图）；Windows 10+ 的 UserChoice 禁止应用静默抢默认（只能引导用户手动设一次）；钉钉无公开文档导入 API。
+**文件组织**
+左栏「最近文件 ⇄ 文件夹树」一键互切：**打开文件夹为项目**（顶栏按钮 / 左栏右键 / 正文右键 / Ctrl+Shift+O / 拖入文件夹五个入口），树只显 Markdown、按层懒加载、单击即开、当前文件自动定位，目录变化自动刷新；最近文件夹（用过即记，上限 12）；最近列表分组 / 置顶 / 过滤。
 
----
+**导出与分享**
+导出 HTML（单文件 base64 内联 / 带资源目录两种模式）、导出 PDF（A4、中文字体正确、可选文内目录页）、打印（Ctrl+P）、微信长图 PNG（超长自动分段）、公众号富文本、飞书（零配置富文本粘贴 / 自建应用 API 双通道）、**Obsidian 一键入库**（自动发现 Vault、连同引用图片一起拷贝、URI 直达定位）。
 
-## 技术栈
+**系统集成**
+「用其他编辑器打开源文件 ▸」子菜单与资源管理器「打开方式」同数据源——**检测到什么列什么**（含各应用真实图标），用「其他程序…」选过一次的编辑器自动出现；`.md` 文件专属图标与应用图标分离；右键菜单 Win11 级手感（悬停展开、斜滑不断、贴合重叠）。
 
-| 层 | 选型 |
-|---|---|
-| 桌面壳 | Tauri 2.x（Rust + WebView2），NSIS 安装器，`webviewInstallMode: downloadBootstrapper` |
-| 官方插件 | tauri-plugin-single-instance（**main.rs 最先注册**）、tauri-plugin-cli、tauri-plugin-clipboard-manager |
-| 渲染内核 | Vditor ≥ 3.11.3 的 `dist/method.min.js`（`Vditor.preview()` + `Vditor.outlineRender()`），**资源本地自托管，禁止 CDN** |
-| 前端 | React 18 + TypeScript（`strict`，禁 `any`）+ Zustand + Tailwind CSS + DOMPurify |
-| Rust 侧 | winreg / notify / windows + webview2-com（PrintToPdf COM 桥接）/ reqwest / serde / clap / thiserror / tracing |
-| 存储 | JSON 于 `%APPDATA%\MDNaonao\`；飞书密钥经 DPAPI 加密 |
-| 安全 | XSS 三层防御：Lute `markdown.sanitize` + DOMPurify + 严格 CSP（一层都不能少） |
+> **明确不做**（完整清单见 DEV_GUIDE 2.2）：编辑（含「轻编辑」）、云同步、双链知识库、插件系统、macOS/Linux、任何遥测。
 
-版本基线：Rust stable（edition 2021+）、Node 20+、pnpm。M0 结束时把全部依赖冻结为精确版本号并回填 DEV_GUIDE 4.2。
+### 常用快捷键
 
----
-
-## 开发环境准备
-
-### 必备
-
-| 组件 | 要求 | 本机当前 | 安装方式 |
+| 键 | 动作 | 键 | 动作 |
 |---|---|---|---|
-| Node.js | **20 +** | ✅ v22.19.0 | https://nodejs.org 或 `winget install OpenJS.NodeJS.LTS` |
-| pnpm | **9 +**（随 Node 的 corepack 启用，见 `package.json` 的 `engines`） | ❌ **未安装**（corepack 0.34.0 已在） | `corepack enable pnpm`（如提示权限不足，用管理员 PowerShell） |
-| Rust | **stable** 工具链（含 cargo、MSVC target） | ❌ **未安装** | `winget install Rustlang.Rustup`，或从 https://rustup.rs 下载 `rustup-init.exe`；装完执行 `rustup default stable` |
-| MSVC 生成工具 | Visual Studio 2022 Build Tools +「使用 C++ 的桌面开发」工作负载 | 未核实 | `winget install Microsoft.VisualStudio.2022.BuildTools`（Tauri 在 Windows 上链接必需） |
-| WebView2 Runtime | Evergreen | Win11 系统自带 | Win10 少数设备缺失时从 https://developer.microsoft.com/microsoft-edge/webview2/ 安装；正式安装包会用 bootstrapper 自动补装 |
+| Ctrl+O | 打开文件 | Ctrl+F | 文档内查找 |
+| Ctrl+Shift+O | 打开文件夹 | Ctrl+Shift+F | 左栏过滤 |
+| F11 | 专注阅读 | Ctrl+P | 打印 |
+| Ctrl+B | 收展左栏 | Ctrl+滚轮 / Ctrl+=/-/0 | 缩放 |
 
-> 注意：`msedge.exe` 与 WebView2 Runtime 是两个安装体，Runtime 不含 `msedge.exe`。PDF 兜底路线依赖 Edge 时必须经注册表 `App Paths\msedge.exe` 探测真实路径，**不得硬编码**。
-
-### 首次拉起（工具链齐备后）
-
-```powershell
-corepack enable pnpm             # 一次性启用 pnpm
-pnpm install                     # 安装前端依赖
-node scripts/fetch-vditor.mjs    # 按白名单裁剪出 vendor/vditor/ 自托管资源
-pnpm gen:corpus                  # 生成 test-corpus/big-10mb.md（10MB 压测语料）
-pnpm tauri dev                   # 起开发窗口（需要 Rust 工具链 + 应用图标就位）
-```
+完整总表见 DEV_GUIDE 6.5（唯一事实来源）。
 
 ---
 
-## 常用命令
+## 项目状态
 
-| 命令 | 作用 |
+| 里程碑 | 状态 |
 |---|---|
-| `pnpm dev` | Vite 前端开发服务器（不带 Tauri 外壳） |
-| `pnpm build` | 前端类型检查 + 产物构建 |
-| `pnpm preview` | 本地预览前端构建产物 |
-| `pnpm lint` | ESLint 检查 |
-| `pnpm test` | Vitest 前端单元测试 |
-| `pnpm tauri dev` / `pnpm tauri build` | Tauri 开发窗口 / 打 NSIS 安装包 |
-| `pnpm check:no-cdn` | 扫描产物中是否出现 `unpkg` / `jsdelivr` 字符串（**出现即失败**，红线 8） |
-| `pnpm gen:corpus` | 生成 `test-corpus/big-10mb.md` 压测语料 |
+| M1 阅读体验（批次 1–5：WebView 驯服 / 阅读连续性 / 查找与右键 / 排版 / 文件夹模式） | ✅ 自验通过，待用户整体验收（4.4 文件关联装包实测除外） |
+| M2 导出发布（HTML / PDF / 打印 / 长图） | ✅ 提前完成自验 |
+| M3 生态（Obsidian 入库 / 微信 / 飞书分享） | ✅ 主链路已通 |
+| v1.0 公开发布收尾（winget 上架、签名、检查更新） | ⬜ 计划中 |
+| V2（Win11 一级右键、Ctrl+K 快速切换、衬线模式、自动更新等） | 评估池 |
 
-Rust 侧（在 `src-tauri/` 目录下执行）：
+条目级进度唯一记录处：[UPGRADE_PLAN.md](UPGRADE_PLAN.md) 第 6 节进度总表。
+
+---
+
+## 从源码构建
+
+依赖：Node 20+、pnpm 9+（`corepack enable pnpm`）、Rust stable（MSVC target）、VS 2022 Build Tools（C++ 桌面开发）。
 
 ```powershell
-cargo test
-cargo clippy -- -D warnings     # 必须零告警
-cargo tree                      # 核对 webview2-com / windows 与 wry 的版本对齐
+pnpm install
+node scripts/fetch-vditor.mjs    # 按白名单裁剪 vendor/vditor/ 自托管渲染资源（不入库）
+pnpm gen:corpus                  # 生成 10MB 压测语料（可选）
+pnpm tauri dev                   # 开发窗口
+pnpm package                     # 一条命令产出 release/ 三件套（安装包+便携版+校验和）
 ```
 
-提交前自测口径见 AI_DEV_GUIDE 第 6 节 DoD：`pnpm lint && pnpm test` + `cargo test && cargo clippy -- -D warnings`；完整 `pnpm tauri build` 仅在 M0-0、触碰打包配置的任务、各里程碑出口时必跑。
+| 校验命令 | 作用 |
+|---|---|
+| `pnpm lint && pnpm test` | ESLint + Vitest |
+| `cargo test && cargo clippy -- -D warnings`（src-tauri/ 下） | Rust 测试 + 零告警门 |
+| `pnpm check:no-cdn` | 产物出现 `unpkg`/`jsdelivr` 即失败（红线 8） |
+
+注意事项：换应用/文件图标后必须 `cargo clean -p mdnaonao --release` 再打包（图标由 build 脚本嵌入 exe，cargo 不追踪 icons 目录）；交付物一律出自 `pnpm tauri build` / `pnpm package`（`cargo build --release` 的 exe 内嵌 devUrl，脱离开发服务器即白屏）。
 
 ---
 
 ## 仓库结构
 
 ```
-E:\MDyuedu\
-├── CLAUDE.md                 # AI 会话自动加载的薄入口
 ├── DEV_GUIDE.md              # 需求与方案（唯一事实来源）
-├── AI_DEV_GUIDE.md           # AI 执行手册（红线 / 任务卡 / DoD）
+├── AI_DEV_GUIDE.md           # AI 执行手册（红线 / 事实库 / DoD）
+├── UPGRADE_PLAN.md           # 当前阶段任务卡与条目级进度
+├── CLAUDE.md                 # AI 会话自动加载的薄入口
 ├── THIRD-PARTY-NOTICES.md    # 依赖许可证登记与借鉴规则
-├── src/                      # 前端：components / stores / services / render / styles
-├── src-tauri/                # Rust：tauri.conf.json / Cargo.toml / src
-├── vendor/vditor/            # 自托管渲染资源（不入库，由脚本拉取）
-├── test-corpus/              # 标准测试语料（DEV_GUIDE 12.0 六件套）
-├── docs/m0/                  # M0 各任务卡验证报告（出口评审依据）
-├── scripts/                  # check-no-cdn.mjs / gen-corpus.mjs / fetch-vditor.mjs
-└── .github/                  # CI、PR 模板、Issue 模板
+├── release/                  # 交付物：安装包 + 便携版 + 校验和（pnpm package 产出）
+├── src/                      # 前端：components / stores / services / render / styles / i18n
+├── src-tauri/                # Rust：files / dirtree / export / capture / share / obsidian / shell_integ …
+├── vendor/vditor/            # 自托管渲染资源（不入库，脚本拉取）
+├── test-corpus/              # 标准测试语料（渲染回归 + 压测 + XSS 套件）
+├── docs/                     # 审计与验证报告
+└── scripts/                  # package / fetch-vditor / gen-corpus / check-no-cdn …
 ```
-
----
 
 ## 文档导航
 
-| 文档 | 作用 | 什么时候读 |
-|---|---|---|
-| [DEV_GUIDE.md](DEV_GUIDE.md) | **需求与方案的唯一事实来源**：定位、范围、需求规格（FR 编号）、技术选型、UI/交互规范、架构、里程碑与进度表（9.2）、验收清单（12）。与其他文档冲突时以它为准 | 做任何功能前，按章节定点查阅；进度只在它的 9.2 维护 |
-| [AI_DEV_GUIDE.md](AI_DEV_GUIDE.md) | **执行手册**：AI/开发者的会话启动协议、15 条红线、已核验事实库、仓库结构、编码规范、完成定义（DoD）、M0 任务卡 | 每次开工先读第 1 节；写代码前读第 2/5 节 |
-| [CLAUDE.md](CLAUDE.md) | AI 会话自动加载的薄入口，只做指路和红线速览 | 无需手动读，工具会自动加载 |
-| [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) | 第三方依赖许可证登记 + 参考项目借鉴规则（AGPL 项目禁止抄代码） | 新增依赖、借鉴参考项目代码时 |
-| [docs/m0/README.md](docs/m0/README.md) | M0 验证报告的模板与出口评审判定标准 | 做 M0 任务卡、写验证报告时 |
+| 文档 | 作用 |
+|---|---|
+| [DEV_GUIDE.md](DEV_GUIDE.md) | **唯一事实来源**：定位、范围（2.1/2.2）、需求规格、选型、UI 规范（5/6 章）、架构、里程碑、验收清单。冲突时以它为准 |
+| [UPGRADE_PLAN.md](UPGRADE_PLAN.md) | 任务卡、验收纪律、进度总表、右键菜单规格（附录 A） |
+| [AI_DEV_GUIDE.md](AI_DEV_GUIDE.md) | 会话启动协议、15 条红线、已核验事实库、编码规范、完成定义 |
+| [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) | 第三方许可证 + 参考项目借鉴规则（AGPL 只看思路禁止抄码） |
 
-**新人/新 AI 五分钟上手顺序**：本 README → CLAUDE.md → AI_DEV_GUIDE.md 第 1/2 节 → DEV_GUIDE.md 第 0 节与 9.2 → 认领 9.2 中第一个 ⬜/🔄 且无阻塞的任务。
+**新人/新 AI 上手顺序**：本 README → CLAUDE.md → AI_DEV_GUIDE 第 1/2 节 → DEV_GUIDE 第 0 节 → UPGRADE_PLAN 进度总表。
 
 ---
 
 ## 许可证
 
-本项目采用 [MIT License](LICENSE)。第三方依赖与参考项目的许可证与合规要求见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
-
-图标集 Lucide（MIT）需保留声明；分享功能**不使用微信/飞书/钉钉官方 Logo**，以规避商标风险（DEV_GUIDE 5.8 / 11.6）。
+[MIT License](LICENSE)。第三方依赖与参考项目的合规要求见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。分享功能不使用微信/飞书/钉钉官方 Logo（商标规避，DEV_GUIDE 11.6）。
