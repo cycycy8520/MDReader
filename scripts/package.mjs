@@ -276,7 +276,7 @@ log(`便携版 → ${path.basename(zipPath)}（${humanSize(fs.statSync(zipPath).
 const lines = [];
 for (const file of fs.readdirSync(OUT_DIR)) {
   const full = path.join(OUT_DIR, file);
-  if (!fs.statSync(full).isFile() || file === "SHA256SUMS.txt") continue;
+  if (!fs.statSync(full).isFile() || file === "SHA256SUMS.txt" || file === "README.md") continue;
   const out = execFileSync(
     "powershell",
     ["-NoProfile", "-NonInteractive", "-Command", `(Get-FileHash '${full}' -Algorithm SHA256).Hash`],
@@ -285,6 +285,32 @@ for (const file of fs.readdirSync(OUT_DIR)) {
   lines.push(`${out.toLowerCase()}  ${file}`);
 }
 fs.writeFileSync(path.join(OUT_DIR, "SHA256SUMS.txt"), `${lines.join("\n")}\n`, "utf8");
+
+// ── 7. 交付说明 README：由脚本生成，与产物同生同灭 ──────────────
+//
+// 本目录每次打包会整体重建（上方 rmSync），手写的 README 必然被清掉——
+// 2026-08-20 真丢过一次。说明文字因此收编进脚本：要改措辞改这里，别手写文件。
+fs.writeFileSync(
+  path.join(OUT_DIR, "README.md"),
+  [
+    `# 交付产物（release/）`,
+    ``,
+    `本目录由 \`pnpm package\` 一条命令产出（构建 → 打包 → 校验和），**不要手工往里放文件**`,
+    `（每次打包整目录重建）。当前版本 **${version}**。`,
+    ``,
+    `| 文件 | 这是什么 | 怎么用 |`,
+    `|---|---|---|`,
+    `| \`${productName}_${version}_x64_setup.exe\` | **安装包**（NSIS，Windows x64） | 双击安装；自动注册 .md 文件关联，卸载走系统「应用列表」 |`,
+    `| \`${productName}_${version}_x64_portable.zip\` | 便携版（F19，与安装版同一份 exe） | 解压即用，数据写在解压目录 \`data\\\` 下，不碰注册表与 %APPDATA% |`,
+    `| \`SHA256SUMS.txt\` | 两个交付物的校验和 | \`certutil -hashfile <文件> SHA256\` 比对，防下载损坏/被替换 |`,
+    ``,
+    `> 重打包：\`pnpm package\`（完整构建）或 \`pnpm package --no-build\`（复用现有构建产物）。`,
+    `> 换过应用图标必须先 \`cargo clean -p mdnaonao --release\`，否则 exe 里还是旧图标`,
+    `> （见 src-tauri/icons/README.md）。`,
+    ``,
+  ].join("\n"),
+  "utf8",
+);
 
 console.log("");
 log(`完成，产物在 release\\：`);
