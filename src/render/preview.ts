@@ -160,6 +160,25 @@ const DIAGRAM_PURIFY_CONFIG: PurifyConfig & { IN_PLACE: true } = {
   IN_PLACE: true,
 };
 
+/**
+ * foreignObject 标签内容（HTML 命名空间子树）的专用配置。
+ *
+ * 为什么单独一份：DOMPurify 的命名空间硬化会把 SVG 里 foreignObject 的 HTML 子树
+ * **整个清空**（2026-08-20 实测 3.4.13：壳保留、innerHTML 清零；上面 ADD_TAGS 的
+ * "foreignobject" 只救得了壳）。Mermaid htmlLabels 的节点/边标签全在里面——
+ * 被清掉的直观症状就是用户报的「流程图有形无字」。
+ * 对策见 purifyDiagrams：标签内容先按本配置单独消毒暂存，整树消毒后回填。
+ * 只有 HTML profile、不放行 style **标签**（标签样式全来自 SVG 顶层那个 <style>），
+ * 严格程度不低于图表主配置。
+ */
+const DIAGRAM_LABEL_PURIFY_CONFIG: PurifyConfig = {
+  USE_PROFILES: { html: true },
+  ADD_ATTR: ["style", "class", "xmlns"],
+  FORBID_TAGS: ["style", "script", "iframe", "object", "embed", "form", "link", "base", "meta"],
+  FORBID_ATTR: ["srcdoc", "formaction", "ping"],
+  KEEP_CONTENT: true,
+};
+
 /* ── 调参常量 ──────────────────────────────────────────────── */
 
 /** 等待 Mermaid/KaTeX/hljs 全部落地的上限；超时后按现状继续，只打 warn */
@@ -523,7 +542,16 @@ export function purifyInPlace(container: HTMLElement): void {
   container.innerHTML = purifyHtml(container.innerHTML);
 }
 
-/** 对 Mermaid 产出的子树单独过滤（配置见 DIAGRAM_PURIFY_CONFIG） */
+/**
+ * 对 Mermaid 产出的子树单独过滤（配置见 DIAGRAM_PURIFY_CONFIG）。
+ *
+ * foreignObject 三步走（顺序就是安全边界，不得调换）：
+ *   1. 每个 foreignObject 的 innerHTML 先按 DIAGRAM_LABEL_PURIFY_CONFIG 消毒成字符串暂存；
+ *   2. 整树过 DIAGRAM_PURIFY_CONFIG（此步会把 foreignObject 清成空壳——DOMPurify
+ *      的命名空间硬化所致，见 DIAGRAM_LABEL_PURIFY_CONFIG 的注释）；
+ *   3. 把第 1 步**已消毒**的内容回填进存活下来的壳。
+ * 回填物全部过了 DOMPurify，三层防御一层没少；少任何一步都是「有形无字」或未过滤放行。
+ */
 function purifyDiagrams(container: HTMLElement): void {
   for (const diagram of container.querySelectorAll<HTMLElement>(".language-mermaid")) {
     if (diagram.querySelector("svg") === null) {
@@ -533,7 +561,19 @@ function purifyDiagrams(container: HTMLElement): void {
       continue;
     }
     try {
+      const labels: [Element, string][] = [];
+      for (const label of Array.from(diagram.querySelectorAll("foreignObject"))) {
+        labels.push([
+          label,
+          DOMPurify.sanitize(label.innerHTML, DIAGRAM_LABEL_PURIFY_CONFIG),
+        ]);
+      }
       DOMPurify.sanitize(diagram, DIAGRAM_PURIFY_CONFIG);
+      for (const [label, safeHtml] of labels) {
+        if (label.isConnected) {
+          label.innerHTML = safeHtml;
+        }
+      }
       diagram.setAttribute("data-purified", "true");
     } catch (error) {
       // 过滤失败时宁可不显示：把图表整体清空，绝不放行未过滤的产物

@@ -273,6 +273,11 @@
 - [x] 顺手修的前置 bug：右键委托 effect 依赖漏 `editors`，探测结果从未进过菜单（见 5.6 卡）
 - 验收：`cargo test --lib`（新增 MRU 排序/命令解析/去重排自身三组单测，共 186 项全过）+ clippy 零告警；实测本机列出 VS Code/Rider/Obsidian/ima/Edge/Antigravity 系 + 记事本兜底
 
+### 5.8 Mermaid 流程图「有形无字」修复 ✅ 2026-08-20（用户截图报障：节点全空白）
+- [x] 根因（隔离复现坐实，DOMPurify 3.4.13）：命名空间硬化把 SVG 内 foreignObject 的 HTML 子树整个清空——`ADD_TAGS: foreignobject` 只保得住壳，Mermaid htmlLabels 的节点/边标签全灭；形状按带字尺寸布局完才被消毒，故「框够大、字没有」
+- [x] 修法（preview.ts purifyDiagrams 三步走）：每个 foreignObject 内容先按新增 DIAGRAM_LABEL_PURIFY_CONFIG（纯 HTML profile，禁 style 标签/脚本类）消毒暂存 → 整树过原严格配置 → 回填**已消毒**内容。三层防御一层不少，只绕开命名空间误杀
+- 验收：隔离 A/B/C 对照（修复组 5 标签全存活、色值尺寸与未消毒对照逐位一致）+ 真机 dev 深色主题截图（节点文字可见）；`tsc/lint` 零告警 ✅
+
 ### 5.5 入口顺手化 ✅ 2026-08-19（用户当日反馈：「打开文件夹只在正文右键里反人类；顶栏导出/分享与右键重复」）
 - [x] 顶栏撤下导出/分享钮（功能不减：正文右键「导出 ▸ / 分享 ▸」与 Ctrl+P 原样保留；DG 5.2 顶栏行同步修订）
 - [x] 顶栏新增「打开文件夹」按钮（IconFolder，紧挨「打开文件」）
